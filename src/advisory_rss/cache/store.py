@@ -17,9 +17,39 @@ _lock = threading.Lock()
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Harden cache dir to 0700 when under project cache (mitigates clear-text at rest)
+    try:
+        import os
+
+        if db_path.parent.name == "cache" or "cache" in db_path.parent.parts:
+            try:
+                os.chmod(db_path.parent, 0o700)
+            except OSError as e:
+                logger.debug("chmod cache dir failed for %s: %s", db_path.parent, e)
+    except OSError:
+        pass
     conn = sqlite3.connect(
         str(db_path), timeout=30.0, check_same_thread=False, isolation_level=None
     )
+    # Enforce 0600 on DB file itself (CWE-312 mitigation for cached advisories)
+    try:
+        import os
+
+        if db_path.exists():
+            try:
+                os.chmod(db_path, 0o600)
+            except OSError as e:
+                logger.debug("chmod db failed for %s: %s", db_path, e)
+            # Also harden WAL/SHM if present
+            for suffix in ("-wal", "-shm"):
+                wal = Path(str(db_path) + suffix)
+                if wal.exists():
+                    try:
+                        os.chmod(wal, 0o600)
+                    except OSError as e:
+                        logger.debug("chmod wal failed for %s: %s", wal, e)
+    except OSError:
+        pass
     # Safety pragmas
     try:
         conn.execute("PRAGMA journal_mode=WAL;")

@@ -61,9 +61,66 @@ def auth() -> None:
 
 
 def _upsert_env_file(key: str, value: str, env_path: str = ".env") -> None:
+
+    import os as _os
     import re as _re2
+    import tempfile
+
+    # Validate key to avoid injection (env keys are UPPER_SNAKE)
+    if not _re2.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+        logger.warning("Refusing to write invalid env key %r", key)
+        click.echo(f"Warning: invalid env key {key!r} - not written", err=True)
+        return
+    # Prevent newline injection in value (would create new env entries)
+    if "\n" in value or "\r" in value:
+        logger.warning("Refusing to write env value with newline for %s", key)
+        click.echo(f"Warning: value for {key} contains newline - not written", err=True)
+        return
 
     p = Path(env_path)
+    # Warn if existing file is overly permissive before overwrite
+    if p.exists():
+        try:
+            st = p.stat()
+            if st.st_mode & 0o077:
+                logger.warning(
+                    "Existing %s is world/group readable (%o) - will restrict to 0600",
+                    env_path,
+                    st.st_mode & 0o777,
+                )
+        except OSError as e:
+            logger.debug("Stat failed for %s: %s", env_path, e)
+
+    SENSITIVE_KEYS = {
+        "GITHUB_TOKEN",
+        "GITHUB_PAT",
+        "GITHUB_CLIENT_ID",
+        "REFRESH_TOKEN",
+        "PROTON_BRIDGE_PASSWORD",
+        "PROTON_BRIDGE_PASSWORDS",
+        "GMAIL_APP_PASSWORD",
+        "GMAIL_APP_PASSWORDS",
+        "GMAIL_PASSWORD",
+        "GMAIL_OAUTH_REFRESH_TOKEN",
+        "GMAIL_OAUTH_REFRESH_TOKENS",
+        "GMAIL_OAUTH_CLIENT_SECRET",
+        "GMAIL_OAUTH_TOKEN_FILE",
+    }
+    value_to_store = value
+    is_sensitive = key.upper() in SENSITIVE_KEYS
+    if is_sensitive:
+        try:
+            from advisory_rss.auth.secure import encrypt_value as _enc
+
+            enc = _enc(value)
+            # Only use encrypted form if it differs (i.e., cryptography available)
+            if enc != value:
+                value_to_store = enc
+                logger.debug("Encrypted %s for at-rest storage", key)
+        except (ImportError, OSError, ValueError) as e:
+            logger.debug("Encrypt failed for %s, storing plaintext with 0600: %s", key, e)
+            value_to_store = value
+
     lines: list[str] = []
     if p.exists():
         try:
@@ -78,16 +135,71 @@ def _upsert_env_file(key: str, value: str, env_path: str = ".env") -> None:
     for line in lines:
         if pattern.match(line):
             if not found:
-                new_lines.append(f"{key}={value}")
+                new_lines.append(f"{key}={value_to_store}")
                 found = True
             # skip duplicate
         else:
             new_lines.append(line)
     if not found:
-        new_lines.append(f"{key}={value}")
+        new_lines.append(f"{key}={value_to_store}")
+    content = "\n".join(new_lines) + "\n"
     try:
-        p.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        logger.info("Updated %s with %s", env_path, key)
+        # Ensure parent dir exists with restrictive perms if it's cache/
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            # Harden cache dir to 0700 when we create it
+            if p.parent.name == "cache" or "cache" in p.parent.parts:
+                try:
+                    _os.chmod(p.parent, 0o700)
+                except OSError as ce:
+                    logger.debug("chmod parent failed for %s: %s", p.parent, ce)
+        except OSError as e:
+            logger.debug("Failed to create parent dir for %s: %s", env_path, e)
+
+        # Atomic write with 0600: mkstemp creates file with 0600 respecting umask,
+        # then fchmod enforces 0600 explicitly, then replace
+        fd = None
+        tmp_path: str | None = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(p.parent) if p.parent.exists() else None,
+                prefix=f".{p.name}.tmp.",
+            )
+            # Enforce 0600 immediately (mkstemp already 0600, but be explicit)
+            try:
+                _os.fchmod(fd, 0o600)
+            except OSError as ce:
+                logger.debug("fchmod failed for temp %s: %s", tmp_path, ce)
+            # Write content via fd
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                fd = None  # fd now owned by file object
+                f.write(content)
+                f.flush()
+                try:
+                    _os.fsync(f.fileno())
+                except OSError as se:
+                    logger.debug("fsync failed for %s: %s", tmp_path, se)
+            # Atomic replace
+            Path(tmp_path).replace(p)
+            # Ensure final perms 0600 (replace preserves tmp perms, but enforce)
+            try:
+                p.chmod(0o600)
+            except OSError as ce:
+                logger.debug("chmod failed for %s: %s", p, ce)
+        finally:
+            # Cleanup temp if replace failed and fd still open
+            if fd is not None:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+            if tmp_path is not None:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            # fd already closed via fdopen in success path
+        logger.info("Updated %s with %s (0600)", env_path, key)
     except OSError as e:
         logger.warning("Failed to write %s: %s", env_path, e)
         click.echo(f"Warning: could not write {env_path}: {e}", err=True)

@@ -35,8 +35,25 @@ def _ssl_context_for_host(host: str) -> ssl.SSLContext:
     return ctx
 
 
+def _is_host_allowed(host: str) -> bool:
+    if not isinstance(host, str):
+        return False
+    normalized = host.strip().lower()
+    if not normalized:
+        return False
+    # ::1 is the only allowed host containing ':'
+    if normalized == "::1":
+        return True
+    # Reject hosts containing URL/port/path characters (exact host only)
+    if any(c in normalized for c in (" ", "/", ":", "@", "?", "#")):
+        return False
+    return normalized in ALLOWED_HOSTS
+
+
 def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
-    host = account.get("host", "127.0.0.1")
+    raw_host = account.get("host", "127.0.0.1")
+    # Normalize before allowlist check: strip, lower (exact match, not substring)
+    host = raw_host.strip().lower() if isinstance(raw_host, str) else str(raw_host).strip().lower()
     port = int(account.get("port", 1143))
     security = (account.get("security") or "STARTTLS").upper()
     email = account.get("email", "")
@@ -46,19 +63,33 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
     oauth_client_id = account.get("oauth_client_id", "")
     oauth_client_secret = account.get("oauth_client_secret", "")
 
-    if host not in ALLOWED_HOSTS:
-        raise ValueError(f"IMAP host must be one of {sorted(ALLOWED_HOSTS)}, got {host!r}")
+    if not _is_host_allowed(host):
+        raise ValueError(f"IMAP host must be one of {sorted(ALLOWED_HOSTS)}, got {raw_host!r}")
 
     ctx = _ssl_context_for_host(host)
     if security == "SSL":
         mail = imaplib.IMAP4_SSL(host, port, ssl_context=ctx)
     elif security == "STARTTLS":
         mail = imaplib.IMAP4(host, port)
+
         try:
             mail.starttls(ssl_context=ctx)
-        except (OSError, imaplib.IMAP4.error, ssl.SSLError) as e:
-            logger.warning("STARTTLS failed for %s:%s - trying without TLS: %s", host, port, e)
+        except Exception as e:
+            logger.error("STARTTLS required but failed for %s:%s - aborting (no plaintext fallback): %s", host, port, e)
+            # Ensure underlying socket is closed before propagating
+            try:
+                mail.shutdown()
+            except Exception:  # noqa: BLE001, S110 - cleanup, ignore
+                pass
+            try:
+                mail.close()
+            except Exception:  # noqa: BLE001, S110 - cleanup, ignore
+                pass
+            raise ValueError(f"STARTTLS failed for {host}:{port} - plaintext fallback disabled") from e
     else:  # NONE
+        if host in {"imap.gmail.com", "imap.googlemail.com"}:
+            raise ValueError(f"Plaintext IMAP not allowed for {host!r} - use SSL or STARTTLS")
+        logger.warning("IMAP %s:%s using NONE (plaintext) - only for loopback Bridge", host, port)
         mail = imaplib.IMAP4(host, port)
 
     # Gmail OAuth if configured

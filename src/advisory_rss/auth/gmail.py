@@ -20,11 +20,21 @@ logger = logging.getLogger(__name__)
 
 
 def _load_oauth_file(path: str | Path) -> dict[str, Any]:
+
     p = Path(path)
     if not p.exists():
         return {}
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        text = p.read_text(encoding="utf-8")
+        try:
+            from advisory_rss.auth.secure import decrypt_dict_text
+
+            dec = decrypt_dict_text(text)
+            if dec is not None:
+                return dec
+        except (ImportError, OSError, ValueError) as e:
+            logger.debug("Secure decrypt check failed for %s: %s", path, e)
+        data = json.loads(text)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError, json.JSONDecodeError) as e:
         logger.debug("Failed to load Gmail OAuth file %s: %s", path, e)
@@ -32,18 +42,24 @@ def _load_oauth_file(path: str | Path) -> dict[str, Any]:
 
 
 def _save_oauth_file(path: str | Path, data: dict[str, Any]) -> None:
+
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    # Restrict permissions (600) for token file
     try:
-        p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        from advisory_rss.auth.secure import encrypt_dict, secure_write_text
+
+        payload = encrypt_dict(data)
+        secure_write_text(p, payload)
+    except (ImportError, OSError, ValueError) as e:
+        # Fallback: ensure at least 0600 atomic plaintext
+        logger.debug("Secure save failed for %s, fallback to plaintext 0600: %s", p, e)
         try:
-            p.chmod(0o600)
-        except OSError as e:
-            logger.debug("chmod failed for %s: %s", p, e)
-    except OSError as e:
-        logger.warning("Failed to save Gmail OAuth file %s: %s", p, e)
-        raise
+            from advisory_rss.auth.secure import secure_write_text
+
+            payload = json.dumps(data, indent=2, ensure_ascii=False)
+            secure_write_text(p, payload)
+        except (OSError, ImportError) as e2:
+            logger.warning("Failed to save Gmail OAuth file %s: %s", p, e2)
+            raise
 
 
 def save_gmail_oauth_token(

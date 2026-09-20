@@ -306,9 +306,17 @@ def create_app(
                 diag_comb["cert_tr"] = diag_ct
                 diag_comb["errors"].extend(diag_ct.get("errors") or [])
             if not all_advs:
+                if diag_comb.get("errors"):
+                    # Redact and log for operators, but don't send to client
+                    redacted_errors = [_redact(str(e))[:200] for e in diag_comb["errors"][:2]]
+                    logger.warning(
+                        "Refresh: no advisories, errors=%s q_source=%s",
+                        redacted_errors,
+                        q_source,
+                    )
                 raise HTTPException(
                     status_code=502,
-                    detail=f"Refresh: no advisories (errors={diag_comb['errors'][:2]})",
+                    detail="Refresh: no advisories - see server logs",
                 )
             count = cache.upsert_advisories(all_advs)
             # keep user from GitHub if present
@@ -341,15 +349,19 @@ def create_app(
             msg = _redact(str(e))
             logger.warning("Refresh failed: %s", msg, exc_info=True)
             cache.mark_error(msg)
-            raise HTTPException(status_code=502, detail=f"Refresh failed: {msg[:200]}") from e
+            raise HTTPException(
+                status_code=502, detail="Refresh failed - see server logs"
+            ) from None
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception):
-        # Never leak stack trace; log redacted with trace for operators (RedactFilter safe)
+        # Never leak stack trace to client (CWE-209/497). Log redacted
+        # server-side with full trace for operators (RedactFilter scrubs tokens).
         logger.error(
             "Unhandled error on %s: %s",
             request.url.path,
             _redact(str(exc)),
+            exc_info=(type(exc), exc, exc.__traceback__),
         )
         return JSONResponse(
             status_code=500,

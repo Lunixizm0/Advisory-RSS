@@ -37,6 +37,43 @@ from advisory_rss.server.bind import validate_bind_address
 _UNSET = object()  # type: ignore[var-annotated]
 
 
+def _decrypt_sensitive(value: str | None) -> str | None:
+    if value is None or not isinstance(value, str) or not value.strip():
+        return value
+    v = value.strip()
+    if not v.startswith("enc:") and not v.startswith("gAAAA"):
+        return value
+    # Handle comma-separated list where each item may be encrypted individually
+    # or the whole list encrypted as one blob. First try whole-string decrypt.
+    try:
+        from advisory_rss.auth.secure import decrypt_value
+
+        dec = decrypt_value(v)
+        # If decrypt_value returned different, it was encrypted
+        if dec is not None and dec != v:
+            return dec
+        # Try per-item decrypt for comma-separated encrypted list
+        if "," in v:
+            parts = [p.strip() for p in v.split(",")]
+            dec_parts: list[str] = []
+            changed = False
+            for p in parts:
+                d = decrypt_value(p)
+                if d is not None and d != p:
+                    dec_parts.append(d)
+                    changed = True
+                else:
+                    dec_parts.append(p)
+            if changed:
+                # Re-join with comma (app passwords may contain spaces, but we split on comma only)
+                return ",".join(dec_parts)
+    except (ImportError, OSError, ValueError, AttributeError) as e:
+        import logging
+
+        logging.getLogger(__name__).debug("Decrypt sensitive failed: %s", e)
+    return value
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -198,6 +235,29 @@ class Settings(BaseSettings):
         if not raw.strip():
             return []
         return [p.strip() for p in raw.replace(",", " ").split() if p.strip()]
+
+    # Decrypt sensitive values that were stored encrypted (enc:) in .env
+    # This allows _upsert_env_file to store Fernet-encrypted tokens at rest (CWE-312).
+    @field_validator(
+        "github_token",
+        "github_pat",
+        "github_client_id",
+        "refresh_token",
+        "proton_bridge_password",
+        "proton_bridge_passwords",
+        "gmail_app_password",
+        "gmail_app_passwords",
+        "gmail_password",
+        "gmail_oauth_client_secret",
+        "gmail_oauth_refresh_token",
+        "gmail_oauth_refresh_tokens",
+        mode="before",
+    )
+    @classmethod
+    def _decrypt_sensitive_fields(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return _decrypt_sensitive(v)
+        return v
 
     @field_validator("bind_address")
     @classmethod
