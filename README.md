@@ -1,11 +1,9 @@
-# Advisory-RSS - GitHub Security Advisories - Local RSS (localhost-only)
+# Advisory-RSS - GitHub Security Advisories - Local RSS
 
 Security-first local service that lists **all GitHub Security Advisories created/owned by the authenticated account** and exposes them as an **RSS 2.0 feed** for Zen Browser's RSS Live Folder.
 What the hell is 'Zen Browser's Live Folder?' == `https://github.com/zen-browser/desktop/releases/tag/1.19b`
 
-```
 GitHub API - authenticated PAT - fetch advisories owned/created by account - normalize + cache - RSS 2.0 on 127.0.0.1 - Zen Browser's Live Folder
-```
 
 **Endpoints:**
 
@@ -151,27 +149,27 @@ MAX_ITEMS=500          # RSS truncation (cache still retains all to avoid missin
 
 Restart `app serve` to apply. The feed `Cache-Control: private, max-age=300, must-revalidate` and `<ttl>5</ttl>` update automatically. `app status` shows `Next scheduled sync`.
 
-## 8b. Terminali kapatınca da çalışmaya devam etsin (`--daemon`)
+## 8b. Keep running after closing the terminal (`--daemon`)
 
-Normal `app serve` terminal kapanınca ölür (SIGHUP). Arka planda yaşasın istiyorsan:
+Normal `app serve` dies when the terminal closes (SIGHUP). If you want it to keep running in the background:
 
 ```bash
-# en kolayı — daemonize (double-fork + setsid, nohup gibi ama pid/log yönetimi dahil)
+# easiest — daemonize (double-fork + setsid, like nohup but with pid/log management)
 app serve --daemon
 # → pid: cache/advisory-rss.pid , log: cache/serve.log
-# doğrulama
+# verification
 cat cache/advisory-rss.pid
 ps -p $(cat cache/advisory-rss.pid) -o pid,cmd
 curl http://127.0.0.1:8765/health
 tail -f cache/serve.log
-app stop                # SIGTERM + pid temizleme
+app stop                # SIGTERM + pid cleanup
 app stop --pid-file cache/advisory-rss.pid
 
-# alternatifler (daemon olmadan):
+# alternatives (without daemon):
 nohup app serve > cache/serve.log 2>&1 & disown
-# veya
+# or
 tmux new -s rss "app serve"
-# veya systemd user service (kalıcı)
+# or systemd user service (persistent)
 # ~/.config/systemd/user/advisory-rss.service:
 # [Unit] Description=Advisory RSS localhost-only
 # [Service] ExecStart=%h/Belgeler/Projeler/Advisory-RSS/.venv/bin/python -m advisory_rss.cli serve
