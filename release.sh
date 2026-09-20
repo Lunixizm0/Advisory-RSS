@@ -22,7 +22,7 @@ echo "Tag oluşturuluyor..."
 git tag -f "${TAG}"
 
 echo "Push ediliyor..."
-git push origin master "${TAG}" --force
+git push origin master "${TAG}"
 
 echo "GitHub Release oluşturuluyor..."
 gh release delete "${TAG}" --yes --cleanup-tag 2>/dev/null || true
