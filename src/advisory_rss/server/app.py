@@ -1,4 +1,5 @@
 # FastAPI app factory
+# ruff: noqa: BLE001, S110
 
 from __future__ import annotations
 
@@ -112,10 +113,33 @@ def create_app(
     @app.get("/health")
     async def health() -> JSONResponse:
         meta = cache.get_cache_meta()
+        # per-source counts
+        try:
+            all_advs = cache.load_all()
+            github_count = sum(1 for a in all_advs if (getattr(a, "source", "github") or "github") == "github")
+            cert_tr_count = sum(1 for a in all_advs if getattr(a, "source", "") == "cert-tr")
+        except Exception:
+            github_count = None
+            cert_tr_count = None
+        # cert_tr diag
+        cert_tr_diag = None
+        try:
+            import json
+
+            raw = cache.get_meta("cert_tr_diag")
+            if raw:
+                cert_tr_diag = json.loads(raw)
+        except Exception:
+            pass
         return JSONResponse(
             content={
                 "status": "ok" if not meta.rate_limited_until else "rate_limited",
                 "advisories_count": meta.advisories_count,
+                "github_count": github_count,
+                "cert_tr_count": cert_tr_count,
+                "cert_tr_enabled": settings.enable_cert_tr,
+                "cert_tr_accounts": len(settings.get_proton_accounts()) if settings.enable_cert_tr else 0,
+                "cert_tr_diag": cert_tr_diag,
                 "last_successful_sync": meta.last_successful_sync,
                 "next_scheduled_sync": meta.next_scheduled_sync,
                 "rate_limited_until": meta.rate_limited_until,
@@ -134,26 +158,49 @@ def create_app(
     @app.get("/rss.xml")
     @app.get("/rss")
     async def rss(request: Request) -> Response:
-        if request.query_params:
+        # Optional source filter: ?source=all|github|cert-tr  (default all = mixed)
+        src_filter = (request.query_params.get("source") or "all").lower().strip()
+        if src_filter not in ("all", "github", "cert-tr", "cert_tr"):
+            src_filter = "all"
+        if src_filter == "cert_tr":
+            src_filter = "cert-tr"
+        if request.query_params and "source" not in request.query_params:
             logger.debug(
-                "RSS query params ignored: %s path=%s",
+                "RSS query params ignored (no source): %s path=%s",
                 _redact(str(request.query_params)),
                 request.url.path,
             )
         logger.debug(
-            "RSS request path=%s user_agent=%s",
+            "RSS request path=%s source=%s user_agent=%s",
             request.url.path,
+            src_filter,
             _redact(request.headers.get("user-agent", "")[:200]),
         )
-        # Serve from cache only - never call GitHub here
+        # Serve from cache only - never call GitHub/IMAP here
         advisories = cache.load_sorted(limit=None)  # load all sorted, builder caps by max_items
+        if src_filter != "all":
+            advisories = [a for a in advisories if (getattr(a, "source", "github") or "github") == src_filter]
         feed_user = cache.get_meta("authenticated_user") or "user"
         ttl_minutes = max(1, settings.refresh_interval // 60)
+        # Mixed feed title when both sources present
+        has_github = any((getattr(a, "source", "github") or "github") == "github" for a in advisories)
+        has_cert = any(getattr(a, "source", "") == "cert-tr" for a in advisories)
+        if has_github and has_cert and src_filter == "all":
+            feed_title = f"Security Advisories (GitHub + CERT-TR) - @{feed_user}"
+            feed_desc = f"Mixed feed: GitHub advisories by @{feed_user} + CERT-TR via Proton Mail"
+        elif src_filter == "cert-tr":
+            feed_title = "CERT-TR / Siber Güvenlik Başkanlığı Advisories"
+            feed_desc = "CERT-TR advisories via Proton Mail (siberguvenlik.gov.tr)"
+        else:
+            feed_title = f"GitHub Security Advisories - @{feed_user}"
+            feed_desc = f"Security advisories created by {feed_user} (author={feed_user}) via GitHub API - localhost-only feed"
+        # Keep feed_link sensible
+        feed_link = f"https://github.com/{feed_user}" if src_filter != "cert-tr" else "https://siberguvenlik.gov.tr"
         xml = build_rss(
             advisories,
-            feed_title=f"GitHub Security Advisories - @{feed_user}",
-            feed_link=f"https://github.com/{feed_user}",
-            feed_description=f"Security advisories created by {feed_user} (author={feed_user}) via GitHub API - localhost-only feed",
+            feed_title=feed_title,
+            feed_link=feed_link,
+            feed_description=feed_desc,
             max_items=settings.max_items,
             ttl_minutes=ttl_minutes,
             authenticated_user=feed_user,
@@ -211,35 +258,68 @@ def create_app(
             raise HTTPException(status_code=403, detail="Invalid refresh token")
         # Enforce streaming body size even for chunked (defense in depth)
         await _read_limited_body(request, MAX_POST_BYTES)
+        # Optional ?source= filter
+        q_source = (request.query_params.get("source") or "all").lower().strip()
+        if q_source not in ("all", "github", "cert-tr", "cert_tr"):
+            q_source = "all"
+        if q_source == "cert_tr":
+            q_source = "cert-tr"
         # Trigger sync background
         token = load_token(settings)
-        if not token:
+        # Refresh allows mixed: if no GitHub token but cert-tr enabled, still refresh cert-tr
+        need_github = q_source in ("all", "github")
+        if need_github and not token and settings.enable_cert_tr and q_source == "all":
+            need_github = False
+        elif need_github and not token:
             raise HTTPException(status_code=401, detail="GitHub token not configured")
         # Run sync inline but bounded
         try:
-            client = GitHubClient(settings, token, cache=cache)
+            all_advs = []
+            diag_comb: dict[str, Any] = {"errors": []}
+            if need_github and token:
+                client = GitHubClient(settings, token, cache=cache)
+                try:
+                    advs, diag = await client.sync_all(filter_mode=settings.filter_mode)
+                    all_advs.extend(advs)
+                    diag_comb["github"] = diag
+                    diag_comb["errors"].extend(diag.get("errors") or [])
+                finally:
+                    await client.close()
+            if q_source in ("all", "cert-tr") and settings.enable_cert_tr:
+                from advisory_rss.cert_tr.source import CertTrSource
+
+                src = CertTrSource(settings)
+                advs_ct, diag_ct = src.fetch_all()
+                all_advs.extend(advs_ct)
+                diag_comb["cert_tr"] = diag_ct
+                diag_comb["errors"].extend(diag_ct.get("errors") or [])
+            if not all_advs:
+                raise HTTPException(status_code=502, detail=f"Refresh: no advisories (errors={diag_comb['errors'][:2]})")
+            count = cache.upsert_advisories(all_advs)
+            # keep user from GitHub if present
+            user = None
+            if diag_comb.get("github"):
+                user = diag_comb["github"].get("authenticated_login")
+            cache.mark_success(user=user)
+            nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
+            cache.set_meta("next_scheduled_sync", nxt)
             try:
-                advs, diag = await client.sync_all(filter_mode=settings.filter_mode)
-                count = cache.upsert_advisories(advs)
-                cache.mark_success(user=diag.get("authenticated_login"))
-                # next sync
-                nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
-                cache.set_meta("next_scheduled_sync", nxt)
-                logger.info(
-                    "POST /refresh ok: count=%d login=%s",
-                    count,
-                    diag.get("authenticated_login"),
-                    extra={"diag": diag},
-                )
-                return JSONResponse(
-                    content={
-                        "status": "refreshed",
-                        "count": count,
-                        "diag": {k: v for k, v in diag.items() if k != "errors" or v},
-                    }
-                )
-            finally:
-                await client.close()
+                import json
+
+                if diag_comb.get("cert_tr"):
+                    cache.set_meta("cert_tr_diag", json.dumps(diag_comb["cert_tr"], ensure_ascii=False))
+            except Exception:
+                pass
+            logger.info("POST /refresh ok: count=%d", count, extra={"diag": diag_comb})
+            return JSONResponse(
+                content={
+                    "status": "refreshed",
+                    "count": count,
+                    "diag": {k: v for k, v in diag_comb.items() if k != "errors" or v},
+                }
+            )
+        except HTTPException:
+            raise
         except (OSError, ValueError, RuntimeError) as e:
             msg = _redact(str(e))
             logger.warning("Refresh failed: %s", msg, exc_info=True)
@@ -266,10 +346,12 @@ def create_app(
 
 async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None:
     # Run an immediate refresh on startup (after short grace) then periodic
+    # Mixed: GitHub + CERT-TR (IMAP is sync, wrap in thread)
     logger.info(
-        "background_refresh_loop starting interval=%ds filter=%s",
+        "background_refresh_loop starting interval=%ds filter=%s cert_tr=%s",
         settings.refresh_interval,
         settings.filter_mode,
+        settings.enable_cert_tr,
     )
     first = True
     while True:
@@ -280,25 +362,87 @@ async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None
             await asyncio.sleep(2)
             first = False
         token = load_token(settings)
-        if not token:
-            logger.info("Background refresh skipped - no token")
+        # If neither source is usable, skip
+        if not token and not settings.enable_cert_tr:
+            logger.info("Background refresh skipped - no token and CERT-TR disabled")
+            continue
+        # Also skip if CERT-TR enabled but no Proton accounts and no token => nothing to do
+        if not token and settings.enable_cert_tr and not settings.get_proton_accounts():
+            logger.info("Background refresh skipped - CERT-TR enabled but no Proton accounts and no GitHub token")
             continue
         try:
-            client = GitHubClient(settings, token, cache=cache)
-            try:
-                advs, diag = await client.sync_all(filter_mode=settings.filter_mode)
-                cache.upsert_advisories(advs)
-                cache.mark_success(user=diag.get("authenticated_login"))
-                nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
-                cache.set_meta("next_scheduled_sync", nxt)
+            all_advs = []
+            github_diag = None
+            cert_diag = None
+            errors: list[str] = []
+            # GitHub (async)
+            if token:
+                client = GitHubClient(settings, token, cache=cache)
+                try:
+                    advs, diag = await client.sync_all(filter_mode=settings.filter_mode)
+                    all_advs.extend(advs)
+                    github_diag = diag
+                    errors.extend(diag.get("errors") or [])
+                except (OSError, ValueError, RuntimeError) as e:
+                    msg = _redact(str(e))
+                    logger.warning("Background GitHub refresh failed: %s", msg, exc_info=True)
+                    errors.append(msg)
+                    # keep stale, don't abort cert-tr
+                finally:
+                    await client.close()
+            # CERT-TR (sync IMAP -> run in thread)
+            if settings.enable_cert_tr:
+                try:
+                    from advisory_rss.cert_tr.source import CertTrSource
+
+                    def _fetch_ct():
+                        src = CertTrSource(settings)
+                        return src.fetch_all()
+
+                    advs_ct, diag_ct = await asyncio.to_thread(_fetch_ct)
+                    cert_diag = diag_ct
+                    errors.extend(diag_ct.get("errors") or [])
+                    if advs_ct:
+                        all_advs.extend(advs_ct)
+                except (OSError, ValueError, RuntimeError) as e:
+                    msg = _redact(str(e))
+                    logger.warning("Background CERT-TR refresh failed: %s", msg, exc_info=True)
+                    errors.append(msg)
+            if not all_advs and errors:
+                # Report but keep stale
+                msg = "; ".join(errors[:3])
+                cache.mark_error(msg)
+                logger.warning("Background refresh: no advisories, errors=%s", msg)
+            elif all_advs:
+                # Dedup already done per source; final merge dedup by ghsa_id
+                cache.upsert_advisories(all_advs)
+                user = (github_diag or {}).get("authenticated_login") if github_diag else None
+                cache.mark_success(user=user or cache.get_meta("authenticated_user"))
+                try:
+                    import json
+
+                    if cert_diag is not None:
+                        cache.set_meta("cert_tr_diag", json.dumps(cert_diag, ensure_ascii=False))
+                except Exception:
+                    pass
+                gh_count = 0
+                if isinstance(github_diag, dict):
+                    try:
+                        gh_count = int(github_diag.get("filtered_count") or 0)
+                    except Exception:
+                        gh_count = 0
+                ct_count = int(cert_diag.get("parsed") or 0) if isinstance(cert_diag, dict) else 0
                 logger.info(
-                    "Background refresh OK: %d advisories login=%s",
-                    len(advs),
-                    diag.get("authenticated_login"),
-                    extra={"diag": diag},
+                    "Background refresh OK: total=%d github=%d cert_tr=%d errors=%d",
+                    len(all_advs),
+                    gh_count,
+                    ct_count,
+                    len(errors),
                 )
-            finally:
-                await client.close()
+            else:
+                logger.info("Background refresh: no new advisories")
+            nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
+            cache.set_meta("next_scheduled_sync", nxt)
         except (OSError, ValueError, RuntimeError) as e:
             msg = _redact(str(e))
             logger.warning("Background refresh failed, keeping stale cache: %s", msg, exc_info=True)

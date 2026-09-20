@@ -11,6 +11,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from advisory_rss.config.constants import (
     DEFAULT_BIND_ADDRESS,
     DEFAULT_CACHE_PATH,
+    DEFAULT_CERT_TR_ENABLED,
+    DEFAULT_CERT_TR_SENDER_ALLOWLIST,
     DEFAULT_FILTER_MODE,
     DEFAULT_GITHUB_API_BASE,
     DEFAULT_LOG_FORMAT,
@@ -19,6 +21,10 @@ from advisory_rss.config.constants import (
     DEFAULT_MAX_PAGES_PER_REPO,
     DEFAULT_MAX_REPOS,
     DEFAULT_PORT,
+    DEFAULT_PROTON_FOLDER,
+    DEFAULT_PROTON_IMAP_HOST,
+    DEFAULT_PROTON_IMAP_PORT,
+    DEFAULT_PROTON_IMAP_SECURITY,
     DEFAULT_REFRESH_INTERVAL,
 )
 from advisory_rss.server.bind import validate_bind_address
@@ -95,6 +101,46 @@ class Settings(BaseSettings):
     max_repos: int = Field(default=DEFAULT_MAX_REPOS, validation_alias="MAX_REPOS")
     max_pages_per_repo: int = Field(
         default=DEFAULT_MAX_PAGES_PER_REPO, validation_alias="MAX_PAGES_PER_REPO"
+    )
+
+    # Cert-TR / Proton Mail (multi-account, per-mailbox folder)
+    enable_cert_tr: bool = Field(
+        default=DEFAULT_CERT_TR_ENABLED, validation_alias="ENABLE_CERT_TR"
+    )
+    proton_bridge_email: str | None = Field(default=None, validation_alias="PROTON_BRIDGE_EMAIL")
+    proton_bridge_password: str | None = Field(
+        default=None, validation_alias="PROTON_BRIDGE_PASSWORD"
+    )
+    proton_bridge_host: str = Field(
+        default=DEFAULT_PROTON_IMAP_HOST, validation_alias="PROTON_BRIDGE_HOST"
+    )
+    proton_imap_port: int = Field(
+        default=DEFAULT_PROTON_IMAP_PORT, validation_alias="PROTON_IMAP_PORT"
+    )
+    proton_imap_security: str = Field(
+        default=DEFAULT_PROTON_IMAP_SECURITY, validation_alias="PROTON_IMAP_SECURITY"
+    )
+    proton_imap_folder: str = Field(
+        default=DEFAULT_PROTON_FOLDER, validation_alias="PROTON_IMAP_FOLDER"
+    )
+    # Multi-account overrides (comma/space separated)
+    proton_bridge_emails: str | None = Field(
+        default=None, validation_alias="PROTON_BRIDGE_EMAILS"
+    )
+    proton_bridge_passwords: str | None = Field(
+        default=None, validation_alias="PROTON_BRIDGE_PASSWORDS"
+    )
+    proton_imap_folders: str | None = Field(
+        default=None, validation_alias="PROTON_IMAP_FOLDERS"
+    )
+    # Optional: per-account JSON-like override not needed; plural fields suffice
+    cert_tr_sender_allowlist: str = Field(
+        default=DEFAULT_CERT_TR_SENDER_ALLOWLIST,
+        validation_alias="CERT_TR_SENDER_ALLOWLIST",
+    )
+    cert_tr_max_mails: int = Field(default=200, validation_alias="CERT_TR_MAX_MAILS")
+    cert_tr_search_days: int | None = Field(
+        default=None, validation_alias="CERT_TR_SEARCH_DAYS"
     )
 
     def extra_repo_list(self) -> list[str]:
@@ -226,6 +272,62 @@ class Settings(BaseSettings):
             raise ValueError(f"LOG_FORMAT must be 'text' or 'json' (got {v!r})")
         return fmt
 
+    @field_validator("proton_imap_security")
+    @classmethod
+    def _validate_proton_security(cls, v: str) -> str:
+        lvl = (v or DEFAULT_PROTON_IMAP_SECURITY).strip().upper()
+        if lvl not in {"STARTTLS", "SSL", "NONE"}:
+            raise ValueError("PROTON_IMAP_SECURITY must be STARTTLS|SSL|NONE")
+        return lvl
+
+    @field_validator("proton_imap_folder")
+    @classmethod
+    def _validate_proton_folder(cls, v: str) -> str:
+        fv = (v or DEFAULT_PROTON_FOLDER).strip()
+        if not fv:
+            return DEFAULT_PROTON_FOLDER
+        # Allow IMAP hierarchy chars: letters, digits, /, ., -, _, space
+        import re
+
+        if len(fv) > 100:
+            raise ValueError("PROTON_IMAP_FOLDER too long")
+        if not re.match(r"^[\w .\-/]+$", fv):
+            raise ValueError(f"PROTON_IMAP_FOLDER {fv!r} contains invalid chars")
+        return fv
+
+    @field_validator("proton_imap_folders")
+    @classmethod
+    def _validate_proton_folders(cls, v: str | None) -> str | None:
+        if v is None or not str(v).strip():
+            return v
+        import re
+
+        raw = str(v).strip()
+        if len(raw) > 500:
+            raise ValueError("PROTON_IMAP_FOLDERS too long")
+        # split and validate each
+        parts = [p.strip() for p in re.split(r"[,\s;]+", raw) if p.strip()]
+        for p in parts:
+            if len(p) > 100 or not re.match(r"^[\w .\-/]+$", p):
+                raise ValueError(f"PROTON_IMAP_FOLDERS entry {p!r} invalid")
+        return v
+
+    @field_validator("cert_tr_max_mails")
+    @classmethod
+    def _validate_cert_tr_max(cls, v: int) -> int:
+        if not (1 <= v <= 5000):
+            raise ValueError("CERT_TR_MAX_MAILS must be 1..5000")
+        return v
+
+    @field_validator("cert_tr_search_days")
+    @classmethod
+    def _validate_search_days(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        if not (0 <= v <= 3650):
+            raise ValueError("CERT_TR_SEARCH_DAYS must be 0..3650 or empty (all)")
+        return v
+
     @field_validator("log_file")
     @classmethod
     def _validate_log_file(cls, v: str | None) -> str | None:
@@ -244,6 +346,87 @@ class Settings(BaseSettings):
                 f"LOG_FILE {v!r} must be under project directory, cache/, logs/ or /tmp (got {resolved})"
             )
         return str(v).strip()
+
+    def _split_list(self, raw: str | None) -> list[str]:
+        if not raw or not raw.strip():
+            return []
+        # comma, whitespace or semicolon separated, keep non-empty
+        import re
+
+        parts = re.split(r"[,\s;]+", raw.strip())
+        return [p.strip() for p in parts if p.strip()]
+
+    def get_proton_accounts(self) -> list[dict[str, str]]:
+        """Resolve multi-account Proton config.
+
+        Supports:
+          - Single: PROTON_BRIDGE_EMAIL + PROTON_BRIDGE_PASSWORD + PROTON_IMAP_FOLDER
+          - Multi:  PROTON_BRIDGE_EMAILS= a@proton.me,b@proton.me
+                    PROTON_BRIDGE_PASSWORDS= pass1,pass2
+                    PROTON_IMAP_FOLDERS= INBOX,INBOX.CERT-TR
+                    Indices aligned; missing values fallback to single/defaults.
+        Each account is {email, password, folder, host, port, security}.
+        Folder defaults to PROTON_IMAP_FOLDER / INBOX if not per-account.
+        """
+        emails: list[str] = []
+        passwords: list[str] = []
+        folders: list[str] = []
+
+        if self.proton_bridge_emails and self.proton_bridge_emails.strip():
+            emails = self._split_list(self.proton_bridge_emails)
+            if self.proton_bridge_passwords:
+                passwords = self._split_list(self.proton_bridge_passwords)
+            if self.proton_imap_folders:
+                folders = self._split_list(self.proton_imap_folders)
+        elif self.proton_bridge_email and self.proton_bridge_email.strip():
+            emails = [self.proton_bridge_email.strip()]
+            if self.proton_bridge_password:
+                passwords = [self.proton_bridge_password.strip()]
+            # folder for single: use explicit plural if set else singular
+            if self.proton_imap_folders and self.proton_imap_folders.strip():
+                folders = self._split_list(self.proton_imap_folders)
+            else:
+                folders = [self.proton_imap_folder.strip() or DEFAULT_PROTON_FOLDER]
+        else:
+            return []
+
+        # Align lengths: pad passwords/folders with defaults
+        out: list[dict[str, str]] = []
+        default_folder = (self.proton_imap_folder or DEFAULT_PROTON_FOLDER).strip() or DEFAULT_PROTON_FOLDER
+        # If single password provided but multiple emails, reuse it
+        if len(passwords) == 1 and len(emails) > 1:
+            passwords = passwords * len(emails)
+        for idx, email in enumerate(emails):
+            if not email or "@" not in email:
+                continue
+            pw = ""
+            if idx < len(passwords):
+                pw = passwords[idx]
+            elif passwords:
+                pw = passwords[0]
+            elif self.proton_bridge_password:
+                pw = self.proton_bridge_password
+            folder = default_folder
+            if idx < len(folders) and folders[idx]:
+                folder = folders[idx]
+            # Normalize folder: strip but keep case (IMAP case-sensitive usually)
+            folder = folder.strip() or default_folder
+            out.append(
+                {
+                    "email": email.strip(),
+                    "password": pw.strip() if pw else "",
+                    "folder": folder,
+                    "host": (self.proton_bridge_host or DEFAULT_PROTON_IMAP_HOST).strip(),
+                    "port": str(self.proton_imap_port),
+                    "security": (self.proton_imap_security or DEFAULT_PROTON_IMAP_SECURITY).strip().upper(),
+                }
+            )
+        return out
+
+    def cert_tr_sender_list(self) -> list[str]:
+        if not self.cert_tr_sender_allowlist or not self.cert_tr_sender_allowlist.strip():
+            return [DEFAULT_CERT_TR_SENDER_ALLOWLIST]
+        return [s.strip().lower() for s in self._split_list(self.cert_tr_sender_allowlist) if s.strip()]
 
     def effective_bind_address(self) -> str:
         if self.host and self.bind_address == DEFAULT_BIND_ADDRESS:

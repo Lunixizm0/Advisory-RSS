@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS advisories(
     updated_at TEXT,
     state TEXT,
     html_url TEXT,
-    author_login TEXT
+    author_login TEXT,
+    source TEXT DEFAULT 'github'
 );
 CREATE TABLE IF NOT EXISTS meta(
     key TEXT PRIMARY KEY,
@@ -66,6 +67,31 @@ class CacheStore:
         logger.debug("init schema db=%s", self.db_path)
         try:
             self._conn.executescript(SCHEMA)
+            # Lightweight migrations for existing DBs (idempotent)
+            try:
+                cols = {r[1] for r in self._conn.execute("PRAGMA table_info(advisories)").fetchall()}
+                if "source" not in cols:
+                    self._conn.execute("ALTER TABLE advisories ADD COLUMN source TEXT DEFAULT 'github'")
+                    logger.info("Migrated advisories: added source column")
+                # Backfill normalized_json missing source field (always, idempotent)
+                try:
+                    cur = self._conn.execute("SELECT ghsa_id, normalized_json FROM advisories")
+                    for ghsa_id, nj in cur.fetchall():
+                        try:
+                            d = json.loads(nj)
+                            if "source" not in d:
+                                d["source"] = "github"
+                                new_nj = json.dumps(d, ensure_ascii=False)
+                                self._conn.execute(
+                                    "UPDATE advisories SET normalized_json=?, source=? WHERE ghsa_id=?",
+                                    (new_nj, "github", ghsa_id),
+                                )
+                        except (json.JSONDecodeError, ValueError, TypeError, sqlite3.Error) as ee:
+                            logger.debug("migration backfill skipped %s: %s", ghsa_id, ee)
+                except sqlite3.Error as ee:
+                    logger.debug("backfill query failed: %s", ee)
+            except sqlite3.Error as me:
+                logger.warning("Migration check failed: %s", me)
             logger.debug("cache schema ready db=%s", self.db_path)
         except sqlite3.Error as e:
             logger.error("Cache schema init failed: %s", e, exc_info=True)
@@ -88,15 +114,16 @@ class CacheStore:
                         updated_iso = adv.updated_at.isoformat() if adv.updated_at else None
                         cur.execute(
                             """
-                            INSERT INTO advisories(ghsa_id, raw_json, normalized_json, updated_at, state, html_url, author_login)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO advisories(ghsa_id, raw_json, normalized_json, updated_at, state, html_url, author_login, source)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(ghsa_id) DO UPDATE SET
                                 raw_json=excluded.raw_json,
                                 normalized_json=excluded.normalized_json,
                                 updated_at=excluded.updated_at,
                                 state=excluded.state,
                                 html_url=excluded.html_url,
-                                author_login=excluded.author_login
+                                author_login=excluded.author_login,
+                                source=excluded.source
                             """,
                             (
                                 adv.ghsa_id,
@@ -106,6 +133,7 @@ class CacheStore:
                                 adv.state,
                                 adv.html_url,
                                 adv.author_login,
+                                getattr(adv, "source", "github") or "github",
                             ),
                         )
                         count += 1

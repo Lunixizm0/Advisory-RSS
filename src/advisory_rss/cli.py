@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# ruff: noqa: BLE001, S110
 import asyncio
 import getpass
 import logging
@@ -121,90 +122,172 @@ def auth_status() -> None:
 
 
 @cli.command()
-def sync() -> None:
+@click.option(
+    "--source",
+    type=click.Choice(["all", "github", "cert-tr"], case_sensitive=False),
+    default="all",
+    show_default=True,
+    help="Which source to sync (all includes GitHub + CERT-TR)",
+)
+def sync(source: str = "all") -> None:
     settings = get_settings()
     _setup_logging(settings.log_level, log_file=settings.log_file, log_format=settings.log_format)
     logger.info(
-        "sync started",
+        "sync started source=%s",
+        source,
         extra={
             "filter_mode": settings.filter_mode,
             "cache_path": str(settings.resolved_cache_path),
+            "enable_cert_tr": settings.enable_cert_tr,
         },
     )
+    source = source.lower()
     token = load_token(settings)
-    if not token:
-        click.echo("No token set. Set GITHUB_TOKEN in .env or run `app auth login`.", err=True)
-        sys.exit(1)
+    # Allow cert-tr only sync without GitHub token
+    need_github = source in ("all", "github")
+    if need_github and not token:
+        # If CERT-TR is enabled and user asked all, still allow cert-tr part to run
+        if settings.enable_cert_tr and source == "all":
+            click.echo("Warning: GITHUB_TOKEN not set - GitHub sync will be skipped, CERT-TR only.", err=True)
+            logger.warning("sync without GitHub token - GitHub skipped, CERT-TR only")
+            need_github = False
+        else:
+            click.echo("No token set. Set GITHUB_TOKEN in .env or run `app auth login`.", err=True)
+            sys.exit(1)
 
     cache = CacheStore(settings.resolved_cache_path)
 
     async def _run() -> int:
-        client = GitHubClient(settings, token, cache=cache)
-        try:
-            advs, diag = await client.sync_all(filter_mode=settings.filter_mode)
-            count = cache.upsert_advisories(advs)
-            cache.mark_success(user=diag.get("authenticated_login"))
-            nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
-            cache.set_meta("next_scheduled_sync", nxt)
-            logger.info(
-                "sync ok: upserted=%d filtered=%s raw=%s repos=%s orgs=%s",
-                count,
-                diag.get("filtered_count"),
-                diag.get("raw_count"),
-                diag.get("repos_scanned"),
-                diag.get("orgs_scanned"),
-                extra={"diag": diag},
-            )
-            click.echo(
-                f"Sync OK - {count} advisories upserted (filtered {diag.get('filtered_count')} from {diag.get('raw_count')} raw, {diag.get('repos_scanned')} repos, {diag.get('orgs_scanned')} orgs)"
-            )
-            if diag.get("errors"):
-                click.echo(f"Warnings ({len(diag['errors'])}):", err=True)
-                for e in diag["errors"][:5]:
-                    click.echo(f"  - {_redact(e)}", err=True)
-                for e in diag["errors"]:
-                    logger.warning("sync warning: %s", _redact(e))
-            if advs:
-                click.echo(f"Latest: {advs[0].ghsa_id} - {advs[0].summary[:80]}")
-                logger.debug("latest advisory: %s - %s", advs[0].ghsa_id, advs[0].summary[:80])
-            else:
+        all_advisories = []
+        combined_diag: dict = {
+            "github": None,
+            "cert_tr": None,
+            "errors": [],
+        }
+        # --- GitHub ---
+        if need_github and token:
+            client = GitHubClient(settings, token, cache=cache)
+            try:
+                advs, diag = await client.sync_all(filter_mode=settings.filter_mode)
+                all_advisories.extend(advs)
+                combined_diag["github"] = diag
+                combined_diag["errors"].extend(diag.get("errors") or [])
+                logger.info(
+                    "GitHub sync ok: upserted=%d filtered=%s raw=%s repos=%s orgs=%s",
+                    len(advs),
+                    diag.get("filtered_count"),
+                    diag.get("raw_count"),
+                    diag.get("repos_scanned"),
+                    diag.get("orgs_scanned"),
+                    extra={"diag": diag},
+                )
                 click.echo(
-                    "No advisories matched filter - cache remains empty. Check FILTER_MODE or author login."
+                    f"GitHub sync OK - {len(advs)} advisories (filtered {diag.get('filtered_count')} from {diag.get('raw_count')} raw, {diag.get('repos_scanned')} repos)"
                 )
-                logger.warning(
-                    "sync produced no advisories (filter=%s login=%s)",
-                    settings.filter_mode,
-                    diag.get("authenticated_login"),
-                )
-            return count
-        except AuthError as e:
-            msg = _redact(str(e))
-            logger.error("sync auth error: %s", msg, exc_info=True)
-            click.echo(f"Auth error (401): {msg}", err=True)
-            cache.mark_error(msg)
-            sys.exit(1)
-        except RateLimitError as e:
-            msg = _redact(str(e))
-            logger.warning("sync rate limited retry_after=%s: %s", e.retry_after, msg)
-            click.echo(
-                f"Rate limited - retry after {e.retry_after}: {msg}",
-                err=True,
-            )
-            if e.retry_after:
-                cache.set_meta(
-                    "rate_limited_until",
-                    (datetime.now(UTC) + timedelta(seconds=e.retry_after)).isoformat(),
-                )
-            cache.mark_error(msg)
-            sys.exit(1)
-        except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
-            msg = _redact(str(e))
-            logger.error("sync failed: %s", msg, exc_info=True)
-            click.echo(f"Sync failed: {msg}", err=True)
-            cache.mark_error(msg)
-            sys.exit(1)
-        finally:
-            await client.close()
+                if advs:
+                    click.echo(f"Latest GitHub: {advs[0].ghsa_id} - {advs[0].summary[:80]}")
+            except AuthError as e:
+                msg = _redact(str(e))
+                logger.error("GitHub sync auth error: %s", msg, exc_info=True)
+                click.echo(f"GitHub Auth error (401): {msg}", err=True)
+                cache.mark_error(msg)
+                if source == "github":
+                    sys.exit(1)
+                combined_diag["errors"].append(msg)
+            except RateLimitError as e:
+                msg = _redact(str(e))
+                logger.warning("GitHub rate limited retry_after=%s: %s", e.retry_after, msg)
+                click.echo(f"GitHub rate limited - retry after {e.retry_after}: {msg}", err=True)
+                if e.retry_after:
+                    cache.set_meta(
+                        "rate_limited_until",
+                        (datetime.now(UTC) + timedelta(seconds=e.retry_after)).isoformat(),
+                    )
+                cache.mark_error(msg)
+                if source == "github":
+                    sys.exit(1)
+                combined_diag["errors"].append(msg)
+            except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
+                msg = _redact(str(e))
+                logger.error("GitHub sync failed: %s", msg, exc_info=True)
+                click.echo(f"GitHub sync failed: {msg}", err=True)
+                cache.mark_error(msg)
+                if source == "github":
+                    sys.exit(1)
+                combined_diag["errors"].append(msg)
+            finally:
+                await client.close()
+        elif source in ("all", "github"):
+            click.echo("GitHub sync skipped (no token).")
+
+        # --- CERT-TR (Proton) ---
+        if source in ("all", "cert-tr") and settings.enable_cert_tr:
+            try:
+                from advisory_rss.cert_tr.source import CertTrSource
+
+                src = CertTrSource(settings)
+                advs_ct, diag_ct = src.fetch_all()
+                combined_diag["cert_tr"] = diag_ct
+                combined_diag["errors"].extend(diag_ct.get("errors") or [])
+                if advs_ct:
+                    all_advisories.extend(advs_ct)
+                    click.echo(f"CERT-TR sync OK - {len(advs_ct)} advisories from {diag_ct.get('accounts')} account(s) (raw {diag_ct.get('raw_fetched')})")
+                    click.echo(f"Latest CERT-TR: {advs_ct[0].ghsa_id} - {advs_ct[0].summary[:80]}")
+                else:
+                    click.echo(f"CERT-TR sync: no advisories (raw {diag_ct.get('raw_fetched')}, filtered_sender {diag_ct.get('filtered_sender')})")
+                    if diag_ct.get("errors"):
+                        for e in diag_ct["errors"][:3]:
+                            click.echo(f"  CERT-TR warn: {_redact(e)}", err=True)
+            except (OSError, ValueError, RuntimeError) as e:
+                msg = _redact(str(e))
+                logger.error("CERT-TR sync failed: %s", msg, exc_info=True)
+                click.echo(f"CERT-TR sync failed: {msg}", err=True)
+                cache.mark_error(msg)
+                if source == "cert-tr":
+                    sys.exit(1)
+                combined_diag["errors"].append(msg)
+        elif source in ("all", "cert-tr") and not settings.enable_cert_tr:
+            click.echo("CERT-TR disabled (ENABLE_CERT_TR=false) - skipping.", err=True)
+
+        # --- Upsert combined ---
+        if not all_advisories:
+            # Check if both sources were skipped vs empty result
+            click.echo("No advisories from any source - cache unchanged. Check GITHUB_TOKEN / PROTON_* settings.")
+            # Still mark success if no error (to update next sync)
+            if not combined_diag["errors"]:
+                cache.mark_success(user=cache.get_meta("authenticated_user"))
+                nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
+                cache.set_meta("next_scheduled_sync", nxt)
+            else:
+                cache.mark_error("; ".join(combined_diag["errors"][:3]))
+            return 0
+
+        # Dedup across sources (GitHub GHSA-* vs CERT-TR-* no collision, but keep logic)
+        # CERT-TR already deduped by CVE; GitHub deduped too; cross-source no overlap
+        count = cache.upsert_advisories(all_advisories)
+        # keep authenticated_user from GitHub if present, else cert-tr
+        user = None
+        if combined_diag.get("github"):
+            user = combined_diag["github"].get("authenticated_login")
+        if not user:
+            user = cache.get_meta("authenticated_user")
+        cache.mark_success(user=user)
+        nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
+        cache.set_meta("next_scheduled_sync", nxt)
+        # Store cert-tr diag for health
+        try:
+            import json
+
+            if combined_diag.get("cert_tr"):
+                cache.set_meta("cert_tr_diag", json.dumps(combined_diag["cert_tr"], ensure_ascii=False))
+        except Exception:
+            pass
+        click.echo(f"Sync OK - {count} advisories upserted total ({len(all_advisories)} fetched before dedup)")
+        if combined_diag["errors"]:
+            click.echo(f"Warnings ({len(combined_diag['errors'])}):", err=True)
+            for e in combined_diag["errors"][:5]:
+                click.echo(f"  - {_redact(e)}", err=True)
+        return count
 
     asyncio.run(_run())
 
@@ -530,6 +613,15 @@ def _status() -> None:
     click.echo(f"Bind address:   {settings.effective_bind_address()}:{settings.port}")
     click.echo(f"Cache path:     {settings.resolved_cache_path}")
     click.echo(f"Cached advisories: {meta.advisories_count}")
+    # Per-source breakdown
+    try:
+        all_adv = cache.load_all()
+        github_c = sum(1 for a in all_adv if (getattr(a, "source", "github") or "github") == "github")
+        cert_c = sum(1 for a in all_adv if getattr(a, "source", "") == "cert-tr")
+        click.echo(f"  - GitHub: {github_c}")
+        click.echo(f"  - CERT-TR: {cert_c}")
+    except Exception:
+        pass
     click.echo(f"Last sync:      {meta.last_successful_sync or 'never'}")
     click.echo(f"Next sync:      {meta.next_scheduled_sync or 'not scheduled'}")
     click.echo(f"Rate limited until: {meta.rate_limited_until or 'no'}")
@@ -539,6 +631,18 @@ def _status() -> None:
     click.echo(f"Filter mode:    {settings.filter_mode}")
     click.echo(f"Refresh interval: {settings.refresh_interval}s")
     click.echo(f"Max items (RSS): {settings.max_items}")
+    click.echo(f"CERT-TR enabled: {settings.enable_cert_tr}")
+    if settings.enable_cert_tr:
+        accs = settings.get_proton_accounts()
+        click.echo(f"CERT-TR accounts: {len(accs)}")
+        for a in accs:
+            # Never show password
+            click.echo(f"  - {a['email']} -> folder={a['folder']} host={a['host']}:{a['port']} sec={a['security']}")
+        click.echo(f"CERT-TR allowlist: {settings.cert_tr_sender_allowlist}")
+        click.echo(f"CERT-TR max mails: {settings.cert_tr_max_mails}  search_days: {settings.cert_tr_search_days or 'all'}")
+        diag_raw = cache.get_meta("cert_tr_diag")
+        if diag_raw:
+            click.echo(f"CERT-TR last diag: {diag_raw[:300]}")
     # Also try to infer loopback status
     from advisory_rss.server.bind import is_loopback
 
@@ -546,8 +650,10 @@ def _status() -> None:
     click.echo(f"Bind is loopback: {bind_ok}")
     if not bind_ok:
         click.echo("WARNING: bind address is NOT loopback - will refuse to start", err=True)
-    if not token:
+    if not token and not settings.enable_cert_tr:
         click.echo("Hint: set GITHUB_TOKEN in .env or run `app auth login`", err=True)
+    elif not token:
+        click.echo("Note: GITHUB_TOKEN not set - GitHub source disabled, CERT-TR only", err=True)
 
 
 # Also support `app auth login` already; add root-level `app login` alias for convenience

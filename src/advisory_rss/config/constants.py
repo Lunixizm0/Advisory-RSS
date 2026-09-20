@@ -30,5 +30,16 @@ RSS_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB guard
 GITHUB_API_VERSION = "2022-11-28"
 # Pinned to 2022-11-28 (stable). 2026-03-10 also valid but not required.
 
+# Cert-TR / Proton
+DEFAULT_CERT_TR_ENABLED = False
+DEFAULT_PROTON_IMAP_HOST = "127.0.0.1"
+DEFAULT_PROTON_IMAP_PORT = 1143
+DEFAULT_PROTON_IMAP_SECURITY = "STARTTLS"
+DEFAULT_PROTON_FOLDER = "INBOX"
+DEFAULT_CERT_TR_SENDER_ALLOWLIST = "siberguvenlik.gov.tr"
+
 # Security
 TOKEN_REDACT_PATTERN = r"(gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+)"
+
+# Proton bridge password redaction (append to generic pattern via separate check)
+PROTON_PASSWORD_HINT = "proton"
