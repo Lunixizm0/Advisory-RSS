@@ -72,7 +72,8 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
     title = f"{prefix}{base_title} ({adv.ghsa_id})"
     title_esc = escape_text(title)
 
-    link = adv.html_url.strip() or f"https://github.com/advisories/{adv.ghsa_id}"
+    raw_link = adv.html_url.strip() if adv.html_url else ""
+    link = raw_link if _is_safe_url(raw_link) else f"https://github.com/advisories/{adv.ghsa_id}"
     link_esc = escape_text(link)
 
     guid = escape_text(adv.ghsa_id)

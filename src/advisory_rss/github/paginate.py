@@ -4,7 +4,8 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 # Example: <https://api.github.com/repos/owner/repo/security-advisories?after=XYZ&per_page=100>; rel="next", <...>; rel="last"
-_LINK_RE = re.compile(r'<([^>]+)>\s*;\s*[^,]*rel="([^"]+)"[^,]*')
+# More precise than previous [^,]* variant - split by comma first, then parse each segment
+_LINK_RE = re.compile(r'<([^>]+)>\s*;\s*[^,]*?rel="([^"]+)"')
 
 
 def parse_link_header(value: str | None) -> dict[str, str]:

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
-import re
 from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -13,13 +13,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from advisory_rss.auth.pat import load_token
 from advisory_rss.cache.store import CacheStore
+from advisory_rss.config.constants import TOKEN_REDACT_PATTERN
 from advisory_rss.config.settings import Settings, get_settings
 from advisory_rss.github.client import GitHubClient
 from advisory_rss.rss.builder import build_rss
 from advisory_rss.server.headers import SecurityHeadersMiddleware
 
+import re as _re
+
 logger = logging.getLogger(__name__)
-TOKEN_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+)")
+TOKEN_RE = _re.compile(TOKEN_REDACT_PATTERN)
 
 
 def _redact(s: str) -> str:
@@ -44,9 +47,17 @@ class LimitedSizeMiddleware(BaseHTTPMiddleware):
                     return JSONResponse(
                         status_code=400, content={"detail": "Invalid Content-Length"}
                     )
-            else:
-                pass
+
         return await call_next(request)
+
+
+async def _read_limited_body(request: Request, limit: int = MAX_POST_BYTES) -> bytes:
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > limit:
+            raise HTTPException(status_code=413, detail="Payload too large")
+    return body
 
 
 def create_app(settings: Settings | None = None, cache: CacheStore | None = None) -> FastAPI:
@@ -100,7 +111,7 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
     @app.get("/rss")
     async def rss(request: Request) -> Response:
         if request.query_params:
-            raise HTTPException(status_code=422, detail="Query parameters not allowed")
+            logger.debug("RSS query params ignored: %s", _redact(str(request.query_params)))
         # Serve from cache only - never call GitHub here
         advisories = cache.load_sorted(limit=None)  # load all sorted, builder caps by max_items
         feed_user = cache.get_meta("authenticated_user") or "user"
@@ -147,26 +158,20 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
                 status_code=403,
                 detail="Refresh token not configured - set REFRESH_TOKEN in .env",
             )
-        # Guard refresh with required token
-        provided = (
-            request.headers.get("x-refresh-token") or request.headers.get("authorization") or ""
-        )
-        # support Bearer as refresh
-        if provided.startswith("Bearer "):
-            provided = provided[7:].strip()
+        # Guard refresh with required token - prefer explicit x-refresh-token, fallback to Authorization: Bearer
+        hdr_explicit = request.headers.get("x-refresh-token", "").strip()
+        if hdr_explicit:
+            provided = hdr_explicit
         else:
-            # Header x-refresh-token raw
-            provided = provided.strip()
-        # Also check x-refresh-token header directly (prefer explicit header)
-        hdr = request.headers.get("x-refresh-token", "").strip()
-        if hdr:
-            provided = hdr
-        if provided != settings.refresh_token:
+            auth = request.headers.get("authorization") or ""
+            if auth.startswith("Bearer "):
+                provided = auth[7:].strip()
+            else:
+                provided = auth.strip()
+        if not hmac.compare_digest(provided, settings.refresh_token or ""):
             raise HTTPException(status_code=403, detail="Invalid refresh token")
         # Enforce streaming body size even for chunked (defense in depth)
-        body = await request.body()
-        if len(body) > MAX_POST_BYTES:
-            raise HTTPException(status_code=413, detail="Payload too large")
+        body = await _read_limited_body(request, MAX_POST_BYTES)
         # Trigger sync background
         token = load_token(settings)
         if not token:
@@ -215,8 +220,15 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
 
 
 async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None:
+    # Run an immediate refresh on startup (after short grace) then periodic
+    first = True
     while True:
-        await asyncio.sleep(settings.refresh_interval)
+        if not first:
+            await asyncio.sleep(settings.refresh_interval)
+        else:
+            # Small grace to let server finish startup
+            await asyncio.sleep(2)
+            first = False
         token = load_token(settings)
         if not token:
             logger.info("Background refresh skipped - no token")

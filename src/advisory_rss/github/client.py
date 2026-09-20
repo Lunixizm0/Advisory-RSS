@@ -21,6 +21,7 @@ from advisory_rss.config.constants import (
     GITHUB_API_VERSION,
     POOL_TIMEOUT,
     READ_TIMEOUT,
+    TOKEN_REDACT_PATTERN,
     WRITE_TIMEOUT,
 )
 from advisory_rss.config.settings import Settings
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_HOSTS = {"api.github.com"}
 
-TOKEN_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+)")
+TOKEN_RE = re.compile(TOKEN_REDACT_PATTERN)
 
 
 def _redact(msg: str) -> str:
@@ -554,13 +555,19 @@ class GitHubClient:
             )
         else:
             repos = await self.list_repos()
-        # Also include extra repos/orgs from config (e.g., AppFuton/Futon if not in affiliation list)
+        # Also include extra repos/orgs from config (e.g., your-org/your-repo if not in affiliation list)
         extra_repos = self.settings.extra_repo_list()
         extra_orgs = self.settings.extra_org_list()
         if self.settings.skip_full_scan and not extra_repos and not extra_orgs:
-            logger.warning(
-                "SKIP_FULL_SCAN=true but no GITHUB_REPOS/GITHUB_ORG set - nothing to scan, raw_count will be 0"
-            )
+            msg = "SKIP_FULL_SCAN=true but no GITHUB_REPOS/GITHUB_ORG set - nothing to scan"
+            logger.error(msg)
+            diag["errors"].append(msg)
+            # Persist error to cache for observability
+            if self.cache is not None:
+                try:
+                    self.cache.mark_error(msg)
+                except Exception:
+                    pass
             diag["repos_scanned"] = 0
             diag["raw_count"] = 0
             diag["normalized_count"] = 0

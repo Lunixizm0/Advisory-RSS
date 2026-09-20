@@ -60,7 +60,6 @@ class Settings(BaseSettings):
     # Optional hardening
     enable_refresh_endpoint: bool = Field(default=False, validation_alias="ENABLE_REFRESH_ENDPOINT")
     refresh_token: str | None = Field(default=None, validation_alias="REFRESH_TOKEN")
-    cors_enabled: bool = Field(default=False, validation_alias="CORS_ENABLED")
 
     # Optional extra repos/orgs (comma-separated)
     github_repos: str | None = Field(default=None, validation_alias="GITHUB_REPOS")
@@ -142,30 +141,34 @@ class Settings(BaseSettings):
     def _validate_github_api_base(cls, v: str) -> str:
         if not v or not isinstance(v, str):
             raise ValueError("GITHUB_API_BASE must be a valid https:// URL")
-        parsed = urlparse(v.strip())
+        raw = v.strip()
+        parsed = urlparse(raw)
         if parsed.scheme not in ("https", "http"):
             raise ValueError(
                 "GITHUB_API_BASE must be https:// (http allowed only for GHES testing)"
             )
+        # http is only allowed for GHES testing - warn if used with api.github.com
+        if parsed.scheme == "http" and parsed.hostname == "api.github.com":
+            raise ValueError("GITHUB_API_BASE for api.github.com must be https:// (http downgrade not allowed)")
         host = parsed.hostname
         if not host:
             raise ValueError("GITHUB_API_BASE must contain a hostname")
+        # Only treat as IP if hostname is a literal IP address
         try:
             ip = ipaddress.ip_address(host)
-            if (
-                ip.is_private
-                or ip.is_loopback
-                or ip.is_link_local
-                or ip.is_multicast
-                or ip.is_reserved
-            ):
-                raise ValueError(f"GITHUB_API_BASE host {host!r} is private/loopback - not allowed")
-        except ValueError as ve:
-            if "private/loopback" in str(ve) or "metadata" in str(ve):
-                raise
+        except ValueError:
+            ip = None  # hostname, not IP - not subject to private range check
+        if ip is not None and (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+        ):
+            raise ValueError(f"GITHUB_API_BASE host {host!r} is private/loopback - not allowed")
         if parsed.username or parsed.password:
             raise ValueError("GITHUB_API_BASE must not contain credentials")
-        return v.strip().rstrip("/")
+        return raw.rstrip("/")
 
     @field_validator("cache_path")
     @classmethod
@@ -175,20 +178,14 @@ class Settings(BaseSettings):
             resolved = (Path.cwd() / p).resolve() if not p.is_absolute() else p.resolve()
         except Exception:
             raise ValueError(f"CACHE_PATH {v!r} is not resolvable")
-        # Allow inside cwd or /tmp
         cwd = Path.cwd().resolve()
         tmp = Path("/tmp").resolve()
         allowed_prefixes = [cwd, tmp, cwd / "cache"]
-        # For absolute paths, require under cwd or /tmp
-        if p.is_absolute():
-            if not any(str(resolved).startswith(str(ap)) for ap in allowed_prefixes):
-                raise ValueError(
-                    f"CACHE_PATH {v!r} must be under project directory or /tmp (got {resolved})"
-                )
-        if not any(str(resolved).startswith(str(ap)) for ap in allowed_prefixes):
-            # Allow cache/ subdir
-            if not str(resolved).startswith(str(cwd)):
-                raise ValueError(f"CACHE_PATH {v!r} escapes project directory")
+        # Use Path.is_relative_to to avoid prefix-collision bypass (e.g. /tmp-evil vs /tmp)
+        if not any(resolved.is_relative_to(ap) for ap in allowed_prefixes):
+            raise ValueError(
+                f"CACHE_PATH {v!r} must be under project directory or /tmp (got {resolved})"
+            )
         return v
 
     @field_validator("log_level")

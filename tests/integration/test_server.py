@@ -113,9 +113,10 @@ def test_integration_rss_returns_valid_200(tmp_path):
 
         assert config.host == "127.0.0.1"
 
-        # Query params should be rejected 422
+        # Query params are now ignored (not 422)
         rq = httpx.get(f"http://127.0.0.1:{port}/rss.xml?foo=bar", timeout=5)
-        assert rq.status_code == 422
+        assert rq.status_code == 200
+        assert "application/rss+xml" in rq.headers.get("content-type", "")
 
         # CORS not present (no Access-Control-Allow-Origin)
         assert "access-control-allow-origin" not in {k.lower() for k in r.headers}

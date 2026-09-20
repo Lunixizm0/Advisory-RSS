@@ -116,22 +116,24 @@ class CacheStore:
         return count
 
     def load_all(self) -> list[NormalizedAdvisory]:
-        try:
-            cur = self._conn.execute("SELECT normalized_json FROM advisories")
-            rows = cur.fetchall()
-            out: list[NormalizedAdvisory] = []
-            for (j,) in rows:
-                try:
-                    data = json.loads(j)
-                    out.append(NormalizedAdvisory.from_dict(data))
-                except Exception as e:
-                    logger.warning("Corrupt cache row skipped: %s", e)
-            return out
-        except sqlite3.Error as e:
-            logger.warning("Cache load failed: %s", e)
-            return []
+        with _lock:
+            try:
+                cur = self._conn.execute("SELECT normalized_json FROM advisories")
+                rows = cur.fetchall()
+                out: list[NormalizedAdvisory] = []
+                for (j,) in rows:
+                    try:
+                        data = json.loads(j)
+                        out.append(NormalizedAdvisory.from_dict(data))
+                    except Exception as e:
+                        logger.warning("Corrupt cache row skipped: %s", e)
+                return out
+            except sqlite3.Error as e:
+                logger.warning("Cache load failed: %s", e)
+                return []
 
     def load_sorted(self, limit: int | None = None) -> list[NormalizedAdvisory]:
+        # load_all already locks; sort outside lock
         all_adv = self.load_all()
         # sort updated_at DESC
         all_adv.sort(key=lambda a: a.sort_key(), reverse=True)
@@ -140,40 +142,49 @@ class CacheStore:
         return all_adv
 
     def count(self) -> int:
-        try:
-            cur = self._conn.execute("SELECT COUNT(*) FROM advisories")
-            return int(cur.fetchone()[0])
-        except sqlite3.Error:
-            return 0
+        with _lock:
+            try:
+                cur = self._conn.execute("SELECT COUNT(*) FROM advisories")
+                return int(cur.fetchone()[0])
+            except sqlite3.Error:
+                return 0
 
     def clear(self) -> None:
-        try:
-            self._conn.execute("DELETE FROM advisories")
-            self._conn.execute("DELETE FROM meta WHERE key LIKE 'etag%'")
-            self._conn.execute("DELETE FROM etags")
-        except sqlite3.Error as e:
-            logger.warning("Cache clear failed: %s", e)
+        with _lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute("DELETE FROM advisories")
+                self._conn.execute("DELETE FROM etags")
+                self._conn.execute("COMMIT")
+            except sqlite3.Error as e:
+                logger.warning("Cache clear failed: %s", e)
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
 
     # --- meta ---
     def get_meta(self, key: str) -> str | None:
-        try:
-            cur = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,))
-            row = cur.fetchone()
-            return row[0] if row else None
-        except sqlite3.Error:
-            return None
+        with _lock:
+            try:
+                cur = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,))
+                row = cur.fetchone()
+                return row[0] if row else None
+            except sqlite3.Error:
+                return None
 
     def set_meta(self, key: str, value: str | None) -> None:
-        try:
-            if value is None:
-                self._conn.execute("DELETE FROM meta WHERE key=?", (key,))
-            else:
-                self._conn.execute(
-                    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (key, value),
-                )
-        except sqlite3.Error as e:
-            logger.warning("set_meta failed %s: %s", key, e)
+        with _lock:
+            try:
+                if value is None:
+                    self._conn.execute("DELETE FROM meta WHERE key=?", (key,))
+                else:
+                    self._conn.execute(
+                        "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (key, value),
+                    )
+            except sqlite3.Error as e:
+                logger.warning("set_meta failed %s: %s", key, e)
 
     def get_cache_meta(self) -> CacheMeta:
         return CacheMeta(
@@ -194,25 +205,27 @@ class CacheStore:
 
     # --- etags ---
     def get_etag(self, url: str) -> str | None:
-        try:
-            cur = self._conn.execute("SELECT etag FROM etags WHERE url=?", (url,))
-            row = cur.fetchone()
-            return row[0] if row else None
-        except sqlite3.Error:
-            return None
+        with _lock:
+            try:
+                cur = self._conn.execute("SELECT etag FROM etags WHERE url=?", (url,))
+                row = cur.fetchone()
+                return row[0] if row else None
+            except sqlite3.Error:
+                return None
 
     def set_etag(self, url: str, etag: str | None) -> None:
-        try:
-            if etag is None:
-                self._conn.execute("DELETE FROM etags WHERE url=?", (url,))
-            else:
-                now = datetime.now(timezone.utc).isoformat()
-                self._conn.execute(
-                    "INSERT INTO etags(url, etag, updated_at) VALUES (?, ?, ?) ON CONFLICT(url) DO UPDATE SET etag=excluded.etag, updated_at=excluded.updated_at",
-                    (url, etag, now),
-                )
-        except sqlite3.Error as e:
-            logger.warning("set_etag failed: %s", e)
+        with _lock:
+            try:
+                if etag is None:
+                    self._conn.execute("DELETE FROM etags WHERE url=?", (url,))
+                else:
+                    now = datetime.now(timezone.utc).isoformat()
+                    self._conn.execute(
+                        "INSERT INTO etags(url, etag, updated_at) VALUES (?, ?, ?) ON CONFLICT(url) DO UPDATE SET etag=excluded.etag, updated_at=excluded.updated_at",
+                        (url, etag, now),
+                    )
+            except sqlite3.Error as e:
+                logger.warning("set_etag failed: %s", e)
 
     def close(self) -> None:
         try:

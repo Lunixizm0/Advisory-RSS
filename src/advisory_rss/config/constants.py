@@ -27,4 +27,4 @@ GITHUB_API_VERSION = "2022-11-28"
 # Pinned to 2022-11-28 (stable). 2026-03-10 also valid but not required.
 
 # Security
-TOKEN_REDACT_PATTERN = r"(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)"
+TOKEN_REDACT_PATTERN = r"(gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+)"

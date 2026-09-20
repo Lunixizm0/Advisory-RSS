@@ -4,7 +4,6 @@ import asyncio
 import getpass
 import logging
 import os
-import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,10 +13,13 @@ import click
 from advisory_rss import __version__
 from advisory_rss.auth.pat import load_token, token_preview
 from advisory_rss.cache.store import CacheStore
+from advisory_rss.config.constants import TOKEN_REDACT_PATTERN
 from advisory_rss.config.settings import get_settings
 from advisory_rss.github.client import AuthError, GitHubClient, RateLimitError
 
-TOKEN_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)")
+import re as _re
+
+TOKEN_RE = _re.compile(TOKEN_REDACT_PATTERN)
 
 
 def _redact(s: str) -> str:
@@ -32,26 +34,38 @@ def configure_logging(level: str) -> None:
         datefmt="%Y-%m-%dT%H:%M:%SZ",
     )
 
-    # Ensure token never appears via custom filter
+    # Ensure token never appears via custom filter - also redact exc_info
     class RedactFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
             if isinstance(record.msg, str):
                 record.msg = _redact(record.msg)
             if record.args:
                 try:
-                    # redact args if strings
                     new_args = []
-                    for a in record.args: 
+                    for a in record.args:
                         if isinstance(a, str):
                             new_args.append(_redact(a))
                         else:
                             new_args.append(a)
-                    record.args = tuple(new_args)  
-                except Exception:  
+                    record.args = tuple(new_args)
+                except Exception:
                     pass
+            # Redact exception info if present (exc_info may contain token in traceback args)
+            if record.exc_info and record.exc_info[1] is not None:
+                try:
+                    # Cannot mutate exc directly safely - redact exc_text if already formatted
+                    pass
+                except Exception:
+                    pass
+            if record.exc_text and isinstance(record.exc_text, str):
+                record.exc_text = _redact(record.exc_text)
             return True
 
+    # Avoid duplicate filters on repeated configure_logging calls
     for h in logging.getLogger().handlers:
+        # Check if our filter already present
+        if any(isinstance(f, RedactFilter) for f in h.filters):
+            continue
         h.addFilter(RedactFilter())
 
 
@@ -292,18 +306,27 @@ def serve(daemon: bool = False, pid_file: str = "cache/advisory-rss.pid", log_fi
     )
 
     if daemon:
-        # Check stale pid
+        # Check stale pid with cmdline verification to avoid PID reuse false positives
         pf = Path(pid_file)
         if pf.exists():
             try:
                 pid = int(pf.read_text(encoding="utf-8").strip())
                 os.kill(pid, 0)
+                # Verify cmdline contains advisory-rss to detect PID reuse
+                try:
+                    cmdline = Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8", errors="ignore")
+                    if "advisory" not in cmdline.lower() and "uvicorn" not in cmdline.lower():
+                        raise ProcessLookupError  # treat as stale
+                except FileNotFoundError:
+                    raise ProcessLookupError
+                except (OSError, ValueError):
+                    pass  # if /proc not available, fall back to kill(0) check
                 click.echo(f"Already running (pid {pid} from {pf}), abort. Use `app stop` first.", err=True)
                 sys.exit(1)
             except (OSError, ValueError, ProcessLookupError):
                 try:
                     pf.unlink(missing_ok=True)
-                except Exception:  
+                except Exception:
                     pass
         click.echo(f"Daemonizing → pid: {pid_file}, log: {log_file} (terminal kapanınca da yaşar, nohup/setsid)")
         _daemonize(pid_file, log_file)

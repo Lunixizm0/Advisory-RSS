@@ -287,11 +287,11 @@ def main() -> int:
     )
     ap.add_argument(
         "--ghsa",
-        help="GHSA id(s) to fetch, comma or space separated, e.g. GHSA-9vxv-2649-f3xc",
+        help="GHSA id(s) to fetch, comma or space separated, e.g. GHSA-xxxx-xxxx-xxxx",
     )
     ap.add_argument(
         "--repo",
-        help="Repo for GHSA fetch, e.g. AppFuton/Futon (needed for private repo advisories)",
+        help="Repo for GHSA fetch, e.g. your-org/your-repo (needed for private repo advisories)",
     )
     ap.add_argument(
         "--all",

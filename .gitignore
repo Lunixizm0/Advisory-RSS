@@ -44,5 +44,8 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+# fixtures are per-user (tied to author's GHSA) - each user generates their own
+# via `python scripts/fixtures_generator.py` - do not commit real fixtures or manifest
 tests/fixtures/*
+!tests/fixtures/.gitkeep
 uv.lock

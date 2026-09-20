@@ -148,8 +148,10 @@ def normalize_advisory(raw: dict[str, Any]) -> NormalizedAdvisory | None:
         repo_adv_url = raw.get("repository_advisory_url")
         if isinstance(repo_adv_url, str) and repo_adv_url.strip():
             if not html_url or "advisories" not in html_url:
-                # keep html_url as is but add reference
-                pass
+                # Keep html_url as primary but add repo_advisory_url as reference if not already present
+                clean = repo_adv_url.strip()
+                if clean not in references:
+                    references.append(clean)
 
         author_login = None
         author = raw.get("author")

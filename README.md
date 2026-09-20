@@ -87,11 +87,11 @@ app status
 # - RSS URL: http://127.0.0.1:8765/rss.xml
 ```
 
-**Direct fetch for advisories in repos you don't own** (you authored GHSA in `Bla/Bla` but `affiliation=owner` doesn't list it - GitHub has no `author` filter, see Known Limitations):
+**Direct fetch for advisories in repos you don't own** (you authored GHSA in `other-org/other-repo` but `affiliation=owner` doesn't list it - GitHub has no `author` filter, see Known Limitations):
 ```bash
 # .env
-GITHUB_REPOS=AppFuton/Futon,Bla/Bla   # comma-separated, always scanned
-GITHUB_ORG=AppFuton                          # expands via /orgs/{org}/repos
+GITHUB_REPOS=your-org/your-repo,other-org/other-repo   # comma-separated, always scanned
+GITHUB_ORG=your-org                          # expands via /orgs/{org}/repos
 SKIP_FULL_SCAN=true   # optional: skip scanning all owned repos, only scan GITHUB_REPOS/GITHUB_ORG (fast)
 # PAT must have Repository access -> Selected repositories covering those repos (fine-grained)
 LOG_LEVEL=INFO app sync
