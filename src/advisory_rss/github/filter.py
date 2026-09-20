@@ -30,7 +30,7 @@ def matches_filter(
 
     if _eq(adv.author_login):
         return True
-    if mode in ("author_or_publisher", "author_or_collaborator"):  
+    if mode in ("author_or_publisher", "author_or_collaborator"):
         if _eq(adv.publisher_login):
             return True
     if mode == "author_or_collaborator":

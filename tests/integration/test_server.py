@@ -16,19 +16,19 @@ from advisory_rss.server.app import create_app
 def test_integration_rss_returns_valid_200(tmp_path):
     db = tmp_path / "c.db"
     settings = Settings(
-        _env_file=None,  
+        _env_file=None,
         github_token="ghp_dummy",
         bind_address="127.0.0.1",
         port=0,
         cache_path=str(db),
-    )  
+    )
 
     # Find free port
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()
-    settings.port = port  
+    settings.port = port
 
     cache = CacheStore(db)
     # Seed cache with two advisories
@@ -78,19 +78,19 @@ def test_integration_rss_returns_valid_200(tmp_path):
         assert r.status_code == 200
         assert "application/rss+xml" in r.headers.get("content-type", "")
         # Validate XML
-        root = ET.fromstring(r.text.encode("utf-8"))  
+        root = ET.fromstring(r.text.encode("utf-8"))
         assert root.tag == "rss"
-        assert root.attrib["version"] == "2.0"  
+        assert root.attrib["version"] == "2.0"
         channel = root.find("channel")
         assert channel is not None
         items = channel.findall("item")
         assert len(items) >= 2
         for item in items:
             assert item.find("guid") is not None
-            assert item.find("guid").attrib["isPermaLink"] == "false"  
+            assert item.find("guid").attrib["isPermaLink"] == "false"
             assert item.find("title") is not None
             assert item.find("link") is not None
-            assert item.find("link").text.startswith("https://github.com/")  
+            assert item.find("link").text.startswith("https://github.com/")
             assert item.find("description") is not None
             assert item.find("pubDate") is not None
 
@@ -139,18 +139,18 @@ def test_integration_does_not_listen_on_0_0_0_0(tmp_path):
     # Validation happens at Settings creation (ValueError -> ValidationError) as well as assert_loopback (SystemExit)
     with pytest.raises((SystemExit, ValidationError)):
         s = Settings(
-            _env_file=None,  
+            _env_file=None,
             bind_address="0.0.0.0",
             port=8765,
             cache_path=str(tmp_path / "c2.db"),
-        )  # 
+        )
         assert_loopback(s.bind_address)
 
     # also verify other non-loopback IPs are rejected
     with pytest.raises((SystemExit, ValidationError)):
         Settings(
-            _env_file=None,  
+            _env_file=None,
             bind_address="192.168.1.1",
             port=8765,
             cache_path=str(tmp_path / "c3.db"),
-        )  # 
+        )

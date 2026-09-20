@@ -4,7 +4,7 @@ from starlette.responses import Response
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):  # 
+    async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
         # Applies to all responses
         response.headers.setdefault("X-Content-Type-Options", "nosniff")

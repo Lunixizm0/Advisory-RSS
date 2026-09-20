@@ -23,9 +23,7 @@ def test_normalize_full():
     assert adv.ghsa_id == "GHSA-xxxv-2649-f3xc"
     assert adv.cve_id is None
     assert adv.severity == "medium"
-    assert (
-        adv.summary == "blablbalabalbalba"
-    )
+    assert adv.summary == "blablbalabalbalba"
     assert adv.author_login == "Lunixizm0"
     assert adv.state == "draft"
     assert (
@@ -96,11 +94,11 @@ def test_normalize_list_skips_malformed():
     lst = [
         real,
         {"not": "advisory"},
-        None,  # 
+        None,
         {"ghsa_id": "GHSA-minimal-0001", "summary": "Minimal", "state": "draft"},
         {"ghsa_id": "GHSA-good-0005", "summary": "good"},
     ]
-    out = normalize_list(lst)  # 
+    out = normalize_list(lst)
     assert len(out) >= 3  # real, minimal, good
     ids = {a.ghsa_id for a in out}
     assert "GHSA-xxxv-2649-f3xc" in ids

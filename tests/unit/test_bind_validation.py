@@ -53,12 +53,12 @@ def test_rejects_hostname():
 def test_rejects_empty():
     assert is_loopback("") is False
     assert is_loopback("   ") is False
-    assert is_loopback(None) is False  
+    assert is_loopback(None) is False
 
 
 def test_rejects_bracket_colon_form():
     assert is_loopback("[::]") is False
-    assert is_loopback("0.0.0.0:8765") is False 
+    assert is_loopback("0.0.0.0:8765") is False
     with pytest.raises(SystemExit):
         assert_loopback("[::]")
 

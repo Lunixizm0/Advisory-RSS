@@ -32,7 +32,7 @@ def test_no_token_in_rss():
 
 def test_no_token_in_logs(caplog):
     caplog.set_level(logging.WARNING)
-    logger = logging.getLogger("advisory_rss.github.client")  
+    logger = logging.getLogger("advisory_rss.github.client")
     # Simulate redaction via client helper: we check log doesn't contain token via _redact in client
     from advisory_rss.github.client import _redact
 
@@ -45,7 +45,7 @@ def test_no_token_in_logs(caplog):
 def test_no_token_in_health_and_rss_via_server(tmp_path):
     db = tmp_path / "c.db"
     settings = Settings(
-        _env_file=None,  # 
+        _env_file=None,
         github_token="ghp_supersecrettokenXYZ",
         bind_address="127.0.0.1",
         port=8765,
@@ -72,12 +72,12 @@ def test_no_token_in_health_and_rss_via_server(tmp_path):
 
 def test_no_token_in_error_response(tmp_path):
     settings = Settings(
-        _env_file=None,  
+        _env_file=None,
         github_token="ghp_tok",
         bind_address="127.0.0.1",
         port=8765,
         cache_path=str(tmp_path / "c2.db"),
-    )  # 
+    )
     cache = CacheStore(settings.resolved_cache_path)
     app = create_app(settings, cache)
     client = TestClient(app, raise_server_exceptions=False)

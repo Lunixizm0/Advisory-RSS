@@ -13,12 +13,12 @@ API = "https://api.github.com"
 
 def make_settings(db_path):
     return Settings(
-        _env_file=None,  
+        _env_file=None,
         github_token="ghp_test",
         bind_address="127.0.0.1",
         port=8765,
         cache_path=str(db_path),
-    )  # 
+    )
 
 
 @respx.mock
@@ -40,7 +40,7 @@ async def test_cache_fallback_on_github_down(tmp_path):
     respx.get(f"{API}/user").mock(return_value=Response(500, json={"message": "server error"}))
     respx.get(url__regex=r".*api\.github\.com.*").mock(return_value=Response(500, json={}))
 
-    with pytest.raises(Exception): 
+    with pytest.raises(Exception):
         await client.get_user()
     # Cache still has stale
     assert cache.count() == 1
@@ -52,7 +52,7 @@ async def test_cache_fallback_on_github_down(tmp_path):
 @respx.mock
 async def test_cache_persists_across_restart(tmp_path):
     db = tmp_path / "persist.db"
-    settings = make_settings(db) 
+    settings = make_settings(db)
     cache = CacheStore(db)
     adv = NormalizedAdvisory(ghsa_id="GHSA-persist-1", summary="persist")
     cache.upsert_advisories([adv])

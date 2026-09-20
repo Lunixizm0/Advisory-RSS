@@ -1,4 +1,4 @@
-#FastAPI app factory
+# FastAPI app factory
 
 from __future__ import annotations
 
@@ -29,8 +29,9 @@ def _redact(s: str) -> str:
 # 20 KiB max for POST bodies
 MAX_POST_BYTES = 20 * 1024
 
+
 class LimitedSizeMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):  
+    async def dispatch(self, request: Request, call_next):
         if request.method == "POST":
             length = request.headers.get("content-length")
             if length is not None:
@@ -189,14 +190,14 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
                 )
             finally:
                 await client.close()
-        except Exception as e:  
+        except Exception as e:
             msg = _redact(str(e))
             logger.warning("Refresh failed: %s", msg)
             cache.mark_error(msg)
             raise HTTPException(status_code=502, detail=f"Refresh failed: {msg[:200]}")
 
     @app.exception_handler(Exception)
-    async def unhandled(request: Request, exc: Exception):  
+    async def unhandled(request: Request, exc: Exception):
         # Never leak stack trace; log redacted
         logger.error(
             "Unhandled error on %s: %s",
@@ -231,7 +232,7 @@ async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None
                 logger.info("Background refresh OK: %d advisories", len(advs))
             finally:
                 await client.close()
-        except Exception as e:  
+        except Exception as e:
             msg = _redact(str(e))
             logger.warning("Background refresh failed, keeping stale cache: %s", msg)
             cache.mark_error(msg)

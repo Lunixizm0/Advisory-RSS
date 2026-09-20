@@ -29,14 +29,16 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
-        populate_by_name=True,)
+        populate_by_name=True,
+    )
 
     # GitHub
     github_token: str | None = Field(default=None, validation_alias="GITHUB_TOKEN")
     github_pat: str | None = Field(default=None, validation_alias="GITHUB_PAT")
     github_client_id: str | None = Field(default=None, validation_alias="GITHUB_CLIENT_ID")
     github_api_base: str = Field(
-        default=DEFAULT_GITHUB_API_BASE, validation_alias="GITHUB_API_BASE")
+        default=DEFAULT_GITHUB_API_BASE, validation_alias="GITHUB_API_BASE"
+    )
 
     # Server
     bind_address: str = Field(default=DEFAULT_BIND_ADDRESS, validation_alias="BIND_ADDRESS")
@@ -46,10 +48,12 @@ class Settings(BaseSettings):
 
     # Behaviour
     refresh_interval: int = Field(
-        default=DEFAULT_REFRESH_INTERVAL, validation_alias="REFRESH_INTERVAL")
+        default=DEFAULT_REFRESH_INTERVAL, validation_alias="REFRESH_INTERVAL"
+    )
     max_items: int = Field(default=DEFAULT_MAX_ITEMS, validation_alias="MAX_ITEMS")
     filter_mode: Literal["author", "author_or_publisher", "author_or_collaborator"] = Field(
-        default=DEFAULT_FILTER_MODE, validation_alias="FILTER_MODE")
+        default=DEFAULT_FILTER_MODE, validation_alias="FILTER_MODE"
+    )
     log_level: str = Field(default=DEFAULT_LOG_LEVEL, validation_alias="LOG_LEVEL")
     cache_path: str = Field(default=DEFAULT_CACHE_PATH, validation_alias="CACHE_PATH")
 
@@ -69,7 +73,9 @@ class Settings(BaseSettings):
 
     # Caps
     max_repos: int = Field(default=DEFAULT_MAX_REPOS, validation_alias="MAX_REPOS")
-    max_pages_per_repo: int = Field(default=DEFAULT_MAX_PAGES_PER_REPO, validation_alias="MAX_PAGES_PER_REPO")
+    max_pages_per_repo: int = Field(
+        default=DEFAULT_MAX_PAGES_PER_REPO, validation_alias="MAX_PAGES_PER_REPO"
+    )
 
     def extra_repo_list(self) -> list[str]:
         raw = self.github_repos or self.extra_repos or ""
@@ -99,7 +105,9 @@ class Settings(BaseSettings):
         from advisory_rss.server.bind import is_loopback
 
         if not is_loopback(v):
-            raise ValueError(f"BIND_ADDRESS={v!r} is not loopback - must be 127.0.0.1 or ::1. Refusing to start.")
+            raise ValueError(
+                f"BIND_ADDRESS={v!r} is not loopback - must be 127.0.0.1 or ::1. Refusing to start."
+            )
         return v.strip().strip("[]")
 
     @field_validator("port")
@@ -136,7 +144,9 @@ class Settings(BaseSettings):
             raise ValueError("GITHUB_API_BASE must be a valid https:// URL")
         parsed = urlparse(v.strip())
         if parsed.scheme not in ("https", "http"):
-            raise ValueError("GITHUB_API_BASE must be https:// (http allowed only for GHES testing)")
+            raise ValueError(
+                "GITHUB_API_BASE must be https:// (http allowed only for GHES testing)"
+            )
         host = parsed.hostname
         if not host:
             raise ValueError("GITHUB_API_BASE must contain a hostname")
@@ -163,17 +173,19 @@ class Settings(BaseSettings):
         p = Path(v)
         try:
             resolved = (Path.cwd() / p).resolve() if not p.is_absolute() else p.resolve()
-        except Exception:  
+        except Exception:
             raise ValueError(f"CACHE_PATH {v!r} is not resolvable")
         # Allow inside cwd or /tmp
         cwd = Path.cwd().resolve()
         tmp = Path("/tmp").resolve()
         allowed_prefixes = [cwd, tmp, cwd / "cache"]
         # For absolute paths, require under cwd or /tmp
-        if p.is_absolute():  
+        if p.is_absolute():
             if not any(str(resolved).startswith(str(ap)) for ap in allowed_prefixes):
-                raise ValueError(f"CACHE_PATH {v!r} must be under project directory or /tmp (got {resolved})")
-        if not any(str(resolved).startswith(str(ap)) for ap in allowed_prefixes):  
+                raise ValueError(
+                    f"CACHE_PATH {v!r} must be under project directory or /tmp (got {resolved})"
+                )
+        if not any(str(resolved).startswith(str(ap)) for ap in allowed_prefixes):
             # Allow cache/ subdir
             if not str(resolved).startswith(str(cwd)):
                 raise ValueError(f"CACHE_PATH {v!r} escapes project directory")

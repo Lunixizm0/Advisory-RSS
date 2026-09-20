@@ -1,4 +1,4 @@
-#Normalize raw GitHub advisory JSON to NormalizedAdvisory - tolerant to missing field
+# Normalize raw GitHub advisory JSON to NormalizedAdvisory - tolerant to missing field
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def _parse_dt(v: Any) -> datetime | None:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
         return dt
-    except Exception:  
+    except Exception:
         return None
 
 
@@ -126,7 +126,7 @@ def normalize_advisory(raw: dict[str, Any]) -> NormalizedAdvisory | None:
             repo_full = pf.get("full_name") or repo_full
         # Check source_code_location for global advisories
         scl = raw.get("source_code_location")
-        if isinstance(scl, str) and scl:  
+        if isinstance(scl, str) and scl:
             if not repo_url:
                 repo_url = scl
         # _injected_repo fallback set by client
@@ -146,7 +146,7 @@ def normalize_advisory(raw: dict[str, Any]) -> NormalizedAdvisory | None:
 
         # repository_advisory_url for global
         repo_adv_url = raw.get("repository_advisory_url")
-        if isinstance(repo_adv_url, str) and repo_adv_url.strip():  
+        if isinstance(repo_adv_url, str) and repo_adv_url.strip():
             if not html_url or "advisories" not in html_url:
                 # keep html_url as is but add reference
                 pass
@@ -194,7 +194,7 @@ def normalize_advisory(raw: dict[str, Any]) -> NormalizedAdvisory | None:
             identifiers=identifiers,
             raw=raw,
         )
-    except Exception as e:  
+    except Exception as e:
         logger.warning("normalize_advisory failed for ghsa=%s: %s", raw.get("ghsa_id"), e)
         return None
 
@@ -208,7 +208,7 @@ def normalize_list(raw_list: list[dict[str, Any]]) -> list[NormalizedAdvisory]:
             adv = normalize_advisory(raw)
             if adv:
                 out.append(adv)
-        except Exception as e:  
+        except Exception as e:
             logger.warning("Skipping malformed advisory: %s", e)
             continue
     return out

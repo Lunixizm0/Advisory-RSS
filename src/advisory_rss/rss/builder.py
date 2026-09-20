@@ -1,4 +1,4 @@
-#RSS 2.0 builder
+# RSS 2.0 builder
 
 from __future__ import annotations
 
@@ -161,7 +161,9 @@ def _build_description_html(adv: NormalizedAdvisory) -> str:
         parts.append(f"<p>{short_esc}</p>")
 
     if adv.withdrawn_at:
-        parts.append(f"<p><strong>Withdrawn:</strong> {html.escape(adv.withdrawn_at.isoformat())}</p>")
+        parts.append(
+            f"<p><strong>Withdrawn:</strong> {html.escape(adv.withdrawn_at.isoformat())}</p>"
+        )
 
     if adv.repository_full_name or adv.repository_url:
         repo = html.escape(adv.repository_full_name or adv.repository_url or "")

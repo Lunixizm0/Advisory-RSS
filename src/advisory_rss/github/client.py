@@ -1,4 +1,4 @@
-#GitHub API client
+# GitHub API client
 
 from __future__ import annotations
 
@@ -34,19 +34,24 @@ _ALLOWED_HOSTS = {"api.github.com"}
 
 TOKEN_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+)")
 
+
 def _redact(msg: str) -> str:
     return TOKEN_RE.sub("***", msg)
+
 
 class GitHubError(RuntimeError):
     pass
 
+
 class AuthError(GitHubError):
     pass
+
 
 class RateLimitError(GitHubError):
     def __init__(self, msg: str, retry_after: float | None = None):
         super().__init__(msg)
         self.retry_after = retry_after
+
 
 def _is_rate_limit_response(resp: httpx.Response) -> bool:
     if resp.status_code == 429:
@@ -59,9 +64,10 @@ def _is_rate_limit_response(resp: httpx.Response) -> bool:
             body = resp.text.lower()
             if "rate limit" in body or "secondary rate limit" in body:
                 return True
-        except Exception:  
+        except Exception:
             pass
     return False
+
 
 def _parse_retry_after(resp: httpx.Response) -> float | None:
     val = resp.headers.get("retry-after")
@@ -82,6 +88,7 @@ def _parse_retry_after(resp: httpx.Response) -> float | None:
             pass
     return None
 
+
 class GitHubClient:
     def __init__(self, settings: Settings, token: str, cache: CacheStore | None = None):
         self.settings = settings
@@ -94,19 +101,22 @@ class GitHubClient:
                 connect=CONNECT_TIMEOUT,
                 read=READ_TIMEOUT,
                 write=WRITE_TIMEOUT,
-                pool=POOL_TIMEOUT,),
+                pool=POOL_TIMEOUT,
+            ),
             headers={
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": GITHUB_API_VERSION,
                 "User-Agent": "advisory-rss/0.2.0",
-                "Authorization": f"Bearer {token}",},
+                "Authorization": f"Bearer {token}",
+            },
             follow_redirects=False,
-            max_redirects=0,)
+            max_redirects=0,
+        )
 
     async def close(self) -> None:
         try:
             await self._client.aclose()
-        except Exception:  
+        except Exception:
             pass
 
     async def _request_with_retry(
@@ -134,7 +144,8 @@ class GitHubClient:
             use_etag
             and method.upper() == "GET"
             and self.cache is not None
-            and "security-advisories" in url)
+            and "security-advisories" in url
+        )
 
         for attempt in range(max_retries + 1):
             # Prepare headers with ETag if present
@@ -147,7 +158,7 @@ class GitHubClient:
                     etag = self.cache.get_etag(etag_key)
                     if etag:
                         hdrs["If-None-Match"] = etag
-            except Exception:  
+            except Exception:
                 etag_key = url
                 hdrs = dict(req_headers)
 
@@ -196,7 +207,7 @@ class GitHubClient:
                         # Need full URL key as above
                         key = etag_key
                         self.cache.set_etag(key, etag_resp)
-                    except Exception:  
+                    except Exception:
                         pass
 
             # Rate limit handling
@@ -205,30 +216,41 @@ class GitHubClient:
                 sleep = (
                     retry_after
                     if retry_after is not None
-                    else (2.0 * (attempt + 1) + random.uniform(0, 0.5)))
+                    else (2.0 * (attempt + 1) + random.uniform(0, 0.5))
+                )
                 if attempt < max_retries:
                     logger.warning(
                         "Rate limited (%d) - sleeping %.1fs (attempt %d/%d)",
                         resp.status_code,
                         sleep,
                         attempt + 1,
-                        max_retries,)
+                        max_retries,
+                    )
                     # Persist rate_limited_until
                     if self.cache is not None:
                         until = datetime.now(UTC).timestamp() + sleep
                         self.cache.set_meta(
                             "rate_limited_until",
-                            datetime.fromtimestamp(until, tz=UTC).isoformat(),)
-                    await asyncio.sleep(min(sleep, 60.0))  # don't block too long in single retry loop; will retry
+                            datetime.fromtimestamp(until, tz=UTC).isoformat(),
+                        )
+                    await asyncio.sleep(
+                        min(sleep, 60.0)
+                    )  # don't block too long in single retry loop; will retry
                     continue
                 # Out of retries
                 raise RateLimitError(_redact(f"Rate limited: {resp.text[:500]}"), retry_after=sleep)
 
             # Auth errors
             if resp.status_code == 401:
-                raise AuthError(_redact(f"401 Unauthorized - invalid or expired token: {resp.text[:300]}"))
+                raise AuthError(
+                    _redact(f"401 Unauthorized - invalid or expired token: {resp.text[:300]}")
+                )
             if resp.status_code == 403 and not _is_rate_limit_response(resp):
-                logger.warning("403 Forbidden for %s - check PAT scopes (needs repository_advisories:read): %s",_redact(url),_redact(resp.text[:400]),)
+                logger.warning(
+                    "403 Forbidden for %s - check PAT scopes (needs repository_advisories:read): %s",
+                    _redact(url),
+                    _redact(resp.text[:400]),
+                )
                 return resp
 
             if resp.status_code == 422:
@@ -242,13 +264,13 @@ class GitHubClient:
                         "GitHub 5xx %d for %s - retry after %.1fs",
                         resp.status_code,
                         _redact(url),
-                        sleep,)
+                        sleep,
+                    )
                     await asyncio.sleep(sleep)
                     continue
                 logger.warning(
-                    "GitHub 5xx %d still after retries for %s",
-                    resp.status_code,
-                    _redact(url))
+                    "GitHub 5xx %d still after retries for %s", resp.status_code, _redact(url)
+                )
                 raise GitHubError(f"GitHub server error {resp.status_code}: {resp.text[:500]}")
 
             # Other codes including 200/404 - return
@@ -273,7 +295,7 @@ class GitHubClient:
             raise GitHubError(f"Malformed /user JSON: {e}") from e
 
     async def list_repos(self) -> list[dict[str, Any]]:
-        #List all repos for authenticated user where affiliation=owner + organization_member.
+        # List all repos for authenticated user where affiliation=owner + organization_member.
         # fetch both owner and organization_member to cover personal and org repos.
         seen_full: set[str] = set()
         aggregated: list[dict[str, Any]] = []
@@ -283,10 +305,13 @@ class GitHubClient:
                 "per_page": DEFAULT_PER_PAGE,
                 "affiliation": affiliation,
                 "sort": "updated",
-                "visibility": "all",}
+                "visibility": "all",
+            }
             page = 0
             while url and page < self.settings.max_pages_per_repo * 10:  # bound overall
-                resp = await self._request_with_retry("GET", url, params=params if page == 0 else None, use_etag=False)
+                resp = await self._request_with_retry(
+                    "GET", url, params=params if page == 0 else None, use_etag=False
+                )
                 # On first paginated Link URL, params already encoded in next_url
                 if resp is None:
                     # Should not happen with use_etag=False
@@ -298,11 +323,15 @@ class GitHubClient:
                     break
                 if resp.status_code != 200:
                     # 403 permission or other
-                    logger.warning("list_repos got %d: %s",resp.status_code,_redact(resp.text[:300]),)
+                    logger.warning(
+                        "list_repos got %d: %s",
+                        resp.status_code,
+                        _redact(resp.text[:300]),
+                    )
                     break
                 try:
                     data = resp.json()
-                except Exception as e:  
+                except Exception as e:
                     logger.warning("Malformed JSON on /user/repos: %s", e)
                     break
                 if not isinstance(data, list):
@@ -316,7 +345,10 @@ class GitHubClient:
                     elif not isinstance(full, str):
                         aggregated.append(repo)
                 if len(aggregated) >= self.settings.max_repos:
-                    logger.warning("Hit MAX_REPOS=%d - truncating (set MAX_REPOS higher if needed)",self.settings.max_repos,)
+                    logger.warning(
+                        "Hit MAX_REPOS=%d - truncating (set MAX_REPOS higher if needed)",
+                        self.settings.max_repos,
+                    )
                     break
                 # pagination via Link
                 next_url = get_next_url(resp.headers.get("link") or resp.headers.get("Link"))
@@ -331,12 +363,14 @@ class GitHubClient:
         return aggregated
 
     async def list_user_orgs(self) -> list[dict[str, Any]]:
-        resp = await self._request_with_retry("GET", "/user/orgs", params={"per_page": DEFAULT_PER_PAGE}, use_etag=False)
+        resp = await self._request_with_retry(
+            "GET", "/user/orgs", params={"per_page": DEFAULT_PER_PAGE}, use_etag=False
+        )
         if resp is None or resp.status_code != 200:
             return []
         try:
             return resp.json() if isinstance(resp.json(), list) else []
-        except Exception:  
+        except Exception:
             return []
 
     async def list_repo_advisories_for_repo(
@@ -397,7 +431,7 @@ class GitHubClient:
                     break
                 try:
                     data = resp.json()
-                except Exception as e:  
+                except Exception as e:
                     logger.warning("Malformed JSON for %s/%s state=%s: %s", owner, repo, state, e)
                     break
                 if not isinstance(data, list):
@@ -458,7 +492,7 @@ class GitHubClient:
                     break
                 try:
                     data = resp.json()
-                except Exception as e:  
+                except Exception as e:
                     logger.warning("Malformed JSON org %s state=%s: %s", org, state, e)
                     break
                 if not isinstance(data, list) or not data:
@@ -510,12 +544,14 @@ class GitHubClient:
                     aggregated_raw.extend(raw)
             except (AuthError, RateLimitError):
                 raise
-            except Exception as e:  
+            except Exception as e:
                 diag["errors"].append(_redact(f"org {org}: {e}"))
 
         if self.settings.skip_full_scan:
             repos: list[dict[str, Any]] = []
-            logger.info("SKIP_FULL_SCAN=true - skipping full owner/member enumeration, only scanning GITHUB_REPOS/GITHUB_ORG")
+            logger.info(
+                "SKIP_FULL_SCAN=true - skipping full owner/member enumeration, only scanning GITHUB_REPOS/GITHUB_ORG"
+            )
         else:
             repos = await self.list_repos()
         # Also include extra repos/orgs from config (e.g., AppFuton/Futon if not in affiliation list)
@@ -547,7 +583,7 @@ class GitHubClient:
                         break
                     try:
                         data = resp.json()
-                    except Exception:  
+                    except Exception:
                         break
                     if not isinstance(data, list):
                         break
@@ -559,7 +595,7 @@ class GitHubClient:
                     full = gr.get("full_name") if isinstance(gr, dict) else None
                     if isinstance(full, str) and not any(r.get("full_name") == full for r in repos):
                         repos.append(gr)
-            except Exception as e:  
+            except Exception as e:
                 diag["errors"].append(_redact(f"extra org {org}: {e}"))
         # Add explicit extra repos (even if not in affiliation list) - fetch repo object minimal
         for full in extra_repos:
@@ -591,7 +627,7 @@ class GitHubClient:
                     aggregated_raw.extend(raws)
             except (AuthError, RateLimitError):
                 raise
-            except Exception as e:  
+            except Exception as e:
                 diag["errors"].append(_redact(f"repo {full}: {e}"))
                 continue
             # small cooperative yield
