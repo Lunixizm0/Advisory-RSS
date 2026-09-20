@@ -308,7 +308,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 p.unlink(missing_ok=True)
         return 0
     except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
-        logger.error("fixtures_generator failed: %s", _redact(str(e)), exc_info=True)
+        logger.exception("fixtures_generator failed")
         print(f"ERROR: {_redact(str(e))}", file=sys.stderr)
         import traceback
 

@@ -15,6 +15,10 @@ from advisory_rss.config.constants import (
     DEFAULT_CERT_TR_SENDER_ALLOWLIST,
     DEFAULT_FILTER_MODE,
     DEFAULT_GITHUB_API_BASE,
+    DEFAULT_GMAIL_FOLDER,
+    DEFAULT_GMAIL_IMAP_HOST,
+    DEFAULT_GMAIL_IMAP_PORT,
+    DEFAULT_GMAIL_IMAP_SECURITY,
     DEFAULT_LOG_FORMAT,
     DEFAULT_LOG_LEVEL,
     DEFAULT_MAX_ITEMS,
@@ -132,6 +136,31 @@ class Settings(BaseSettings):
     )
     proton_imap_folders: str | None = Field(
         default=None, validation_alias="PROTON_IMAP_FOLDERS"
+    )
+    # Gmail (alternative IMAP for CERT-TR, e.g., imap.gmail.com)
+    gmail_email: str | None = Field(default=None, validation_alias="GMAIL_EMAIL")
+    gmail_app_password: str | None = Field(
+        default=None, validation_alias="GMAIL_APP_PASSWORD"
+    )
+    gmail_password: str | None = Field(default=None, validation_alias="GMAIL_PASSWORD")
+    gmail_imap_host: str = Field(
+        default=DEFAULT_GMAIL_IMAP_HOST, validation_alias="GMAIL_IMAP_HOST"
+    )
+    gmail_imap_port: int = Field(
+        default=DEFAULT_GMAIL_IMAP_PORT, validation_alias="GMAIL_IMAP_PORT"
+    )
+    gmail_imap_security: str = Field(
+        default=DEFAULT_GMAIL_IMAP_SECURITY, validation_alias="GMAIL_IMAP_SECURITY"
+    )
+    gmail_imap_folder: str = Field(
+        default=DEFAULT_GMAIL_FOLDER, validation_alias="GMAIL_IMAP_FOLDER"
+    )
+    gmail_emails: str | None = Field(default=None, validation_alias="GMAIL_EMAILS")
+    gmail_app_passwords: str | None = Field(
+        default=None, validation_alias="GMAIL_APP_PASSWORDS"
+    )
+    gmail_imap_folders: str | None = Field(
+        default=None, validation_alias="GMAIL_IMAP_FOLDERS"
     )
     # Optional: per-account JSON-like override not needed; plural fields suffice
     cert_tr_sender_allowlist: str = Field(
@@ -286,12 +315,12 @@ class Settings(BaseSettings):
         fv = (v or DEFAULT_PROTON_FOLDER).strip()
         if not fv:
             return DEFAULT_PROTON_FOLDER
-        # Allow IMAP hierarchy chars: letters, digits, /, ., -, _, space
+        # Allow IMAP hierarchy chars: letters, digits, /, ., -, _, space, brackets for Gmail
         import re
 
         if len(fv) > 100:
             raise ValueError("PROTON_IMAP_FOLDER too long")
-        if not re.match(r"^[\w .\-/]+$", fv):
+        if not re.match(r"^[\w .\-/\[\]]+$", fv):
             raise ValueError(f"PROTON_IMAP_FOLDER {fv!r} contains invalid chars")
         return fv
 
@@ -305,11 +334,54 @@ class Settings(BaseSettings):
         raw = str(v).strip()
         if len(raw) > 500:
             raise ValueError("PROTON_IMAP_FOLDERS too long")
-        # split and validate each
-        parts = [p.strip() for p in re.split(r"[,\s;]+", raw) if p.strip()]
+        # split only on comma/semicolon to preserve spaces/brackets inside folder names
+        parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
+        # if no comma/semicolon but spaces, fallback to comma/whitespace split for backward compat
+        if len(parts) == 1 and "," not in raw and ";" not in raw:
+            parts = [p.strip() for p in re.split(r"[,\s;]+", raw) if p.strip()]
         for p in parts:
-            if len(p) > 100 or not re.match(r"^[\w .\-/]+$", p):
+            if len(p) > 100 or not re.match(r"^[\w .\-/\[\]]+$", p):
                 raise ValueError(f"PROTON_IMAP_FOLDERS entry {p!r} invalid")
+        return v
+
+    @field_validator("gmail_imap_security")
+    @classmethod
+    def _validate_gmail_security(cls, v: str) -> str:
+        lvl = (v or DEFAULT_GMAIL_IMAP_SECURITY).strip().upper()
+        if lvl not in {"STARTTLS", "SSL", "NONE"}:
+            raise ValueError("GMAIL_IMAP_SECURITY must be STARTTLS|SSL|NONE")
+        return lvl
+
+    @field_validator("gmail_imap_folder")
+    @classmethod
+    def _validate_gmail_folder(cls, v: str) -> str:
+        fv = (v or DEFAULT_GMAIL_FOLDER).strip()
+        if not fv:
+            return DEFAULT_GMAIL_FOLDER
+        import re
+
+        if len(fv) > 100:
+            raise ValueError("GMAIL_IMAP_FOLDER too long")
+        if not re.match(r"^[\w .\-/\[\]]+$", fv):
+            raise ValueError(f"GMAIL_IMAP_FOLDER {fv!r} contains invalid chars")
+        return fv
+
+    @field_validator("gmail_imap_folders")
+    @classmethod
+    def _validate_gmail_folders(cls, v: str | None) -> str | None:
+        if v is None or not str(v).strip():
+            return v
+        import re
+
+        raw = str(v).strip()
+        if len(raw) > 500:
+            raise ValueError("GMAIL_IMAP_FOLDERS too long")
+        parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
+        if len(parts) == 1 and "," not in raw and ";" not in raw:
+            parts = [p.strip() for p in re.split(r"[,\s;]+", raw) if p.strip()]
+        for p in parts:
+            if len(p) > 100 or not re.match(r"^[\w .\-/\[\]]+$", p):
+                raise ValueError(f"GMAIL_IMAP_FOLDERS entry {p!r} invalid")
         return v
 
     @field_validator("cert_tr_max_mails")
@@ -422,6 +494,95 @@ class Settings(BaseSettings):
                 }
             )
         return out
+
+    def get_gmail_accounts(self) -> list[dict[str, str]]:
+        """Resolve Gmail IMAP accounts for CERT-TR.
+
+        Supports single (GMAIL_EMAIL + GMAIL_APP_PASSWORD) and
+        multi (GMAIL_EMAILS, GMAIL_APP_PASSWORDS comma-separated,
+        GMAIL_IMAP_FOLDERS).  Host/port/security are shared per Gmail
+        config (defaults imap.gmail.com:993 SSL).
+        Each account is {email,password,folder,host,port,security,provider}.
+        """
+        emails: list[str] = []
+        passwords: list[str] = []
+        folders: list[str] = []
+
+        # Helper to split passwords preserving internal spaces (comma-only)
+        def _split_passwords(raw: str | None) -> list[str]:
+            if not raw or not raw.strip():
+                return []
+            # split only on comma, keep internal spaces
+            parts = [p.strip() for p in raw.split(",")]
+            return [p for p in parts if p]
+
+        if self.gmail_emails and self.gmail_emails.strip():
+            emails = self._split_list(self.gmail_emails)
+            if self.gmail_app_passwords:
+                passwords = _split_passwords(self.gmail_app_passwords)
+            elif self.gmail_app_password or self.gmail_password:
+                # single fallback handled later
+                pass
+            if self.gmail_imap_folders:
+                folders = self._split_list(self.gmail_imap_folders)
+        elif self.gmail_email and self.gmail_email.strip():
+            emails = [self.gmail_email.strip()]
+            # Prefer app password, fallback to GMAIL_PASSWORD alias
+            pw = self.gmail_app_password or self.gmail_password
+            if pw:
+                passwords = [pw.strip()]
+            if self.gmail_imap_folders and self.gmail_imap_folders.strip():
+                folders = self._split_list(self.gmail_imap_folders)
+            else:
+                folders = [self.gmail_imap_folder.strip() or DEFAULT_GMAIL_FOLDER]
+        else:
+            return []
+
+        out: list[dict[str, str]] = []
+        default_folder = (self.gmail_imap_folder or DEFAULT_GMAIL_FOLDER).strip() or DEFAULT_GMAIL_FOLDER
+        if len(passwords) == 1 and len(emails) > 1:
+            passwords = passwords * len(emails)
+        for idx, email in enumerate(emails):
+            if not email or "@" not in email:
+                continue
+            pw = ""
+            if idx < len(passwords):
+                pw = passwords[idx]
+            elif passwords:
+                pw = passwords[0]
+            else:
+                # fallback single
+                single_pw = self.gmail_app_password or self.gmail_password
+                pw = single_pw or ""
+            folder = default_folder
+            if idx < len(folders) and folders[idx]:
+                folder = folders[idx]
+            folder = folder.strip() or default_folder
+            out.append(
+                {
+                    "email": email.strip(),
+                    "password": pw.strip() if pw else "",
+                    "folder": folder,
+                    "host": (self.gmail_imap_host or DEFAULT_GMAIL_IMAP_HOST).strip(),
+                    "port": str(self.gmail_imap_port),
+                    "security": (self.gmail_imap_security or DEFAULT_GMAIL_IMAP_SECURITY).strip().upper(),
+                    "provider": "gmail",
+                }
+            )
+        return out
+
+    def get_cert_tr_accounts(self) -> list[dict[str, str]]:
+        """Unified CERT-TR IMAP accounts: Proton + Gmail.
+
+        Each entry is {email,password,folder,host,port,security,provider}.
+        Proton entries have provider 'proton', Gmail 'gmail'.
+        """
+        proton = self.get_proton_accounts()
+        for p in proton:
+            p.setdefault("provider", "proton")
+        gmail = self.get_gmail_accounts()
+        # gmail already has provider
+        return proton + gmail
 
     def cert_tr_sender_list(self) -> list[str]:
         if not self.cert_tr_sender_allowlist or not self.cert_tr_sender_allowlist.strip():

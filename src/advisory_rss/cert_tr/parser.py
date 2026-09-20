@@ -7,11 +7,9 @@ Handles:
   - CVE-dedup ID: CERT-TR-CVE-YYYY-NNNNN or fallback to Message-Id hash
   - Never marks as read (parser only)
 """
-# ruff: noqa: BLE001, S112, SIM102
 
 from __future__ import annotations
 
-import hashlib
 import html
 import logging
 import re
@@ -52,7 +50,7 @@ def decode_rfc2047(s: str | None) -> str:
             else:
                 out += raw
         return out
-    except Exception as e:
+    except (LookupError, ValueError, UnicodeDecodeError, AttributeError) as e:
         logger.debug("decode_rfc2047 failed %r: %s", s[:80], e)
         return str(s)
 
@@ -75,7 +73,7 @@ def _parse_date(date_str: str | None) -> datetime | None:
         if dt and dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
         return dt
-    except Exception as e:
+    except (ValueError, TypeError, AttributeError) as e:
         logger.debug("date parse failed %r: %s", date_str, e)
         return None
 
@@ -132,7 +130,7 @@ def _extract_body(msg: EmailMessage) -> tuple[str, str | None]:
                     break
                 except LookupError:
                     continue
-                except Exception:  # noqa: BLE001
+                except (ValueError, UnicodeDecodeError):
                     continue
             if text is None:
                 text = payload.decode("utf-8", errors="replace")  # type: ignore[union-attr]
@@ -244,15 +242,15 @@ def _build_summary(subject_decoded: str, product: str | None, cve: str | None, c
 
 
 def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
-    """Parse raw RFC822 bytes from Proton Bridge into NormalizedAdvisory.
+    """Parse raw RFC822 bytes from Proton/Bridge or Gmail into NormalizedAdvisory.
 
-    Returns None if sender not in allowlist or no CVE and not enough data.
-    Uses CVE-based id for dedup (CERT-TR-CVE-...), else Message-Id hash.
+    Returns None if no CVE is assigned (strict filter to avoid false positives).
+    Uses CVE-based id for dedup (CERT-TR-CVE-...).
     Never marks mail read.
     """
     try:
         msg = BytesParser(policy=policy.default).parsebytes(raw_bytes)
-    except Exception as e:
+    except (ValueError, TypeError, AttributeError) as e:
         logger.warning("Failed to parse email bytes: %s", e)
         return None
 
@@ -283,32 +281,23 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
 
     # If no CVE found, still maybe useful? Require at least product or cwe or cve
     # For strict CERT-TR, require CVE; otherwise skip to avoid noise from unrelated mail
+    if not cve_primary and message_id:
+        m = CVE_RE.search(message_id)
+        if m:
+            cve_primary = m.group(0).upper()
+            if cve_primary not in cves:
+                cves.append(cve_primary)
+
     if not cve_primary:
-        # also check message_id contains CVE?
-        if message_id:
-            m = CVE_RE.search(message_id)
-            if m:
-                cve_primary = m.group(0).upper()
-                if cve_primary not in cves:
-                    cves.append(cve_primary)
-
-    if not cve_primary and not product and not cwe:
-        logger.debug("Skipping non-CERT-TR mail subject=%r from=%r", subject[:60], from_decoded[:60])
+        logger.debug(
+            "Skipping CERT-TR mail without CVE subject=%r from=%r",
+            subject[:60],
+            from_decoded[:60],
+        )
         return None
-    # If still no CVE, we cannot make stable id from CVE; use message-id hash but mark as cert-tr generic
-    # For now require CVE to produce advisory; if no CVE, create id from hash but keep cve_id None
-    # We will allow it but id will be hash-based
-    # Validation: sender domain check is done at source level, not here
 
-    # ID generation: CERT-TR-CVE-xxx priority
-    if cve_primary:
-        ghsa_id = f"CERT-TR-{cve_primary.upper()}"
-    else:
-        # hash message-id + date + subject
-        h = hashlib.sha256()
-        h.update((message_id or subject or plain_text[:100]).encode("utf-8", errors="ignore"))
-        digest = h.hexdigest()[:12].upper()
-        ghsa_id = f"CERT-TR-MSG-{digest}"
+    # ID generation: strictly CVE-based (prevents false positives)
+    ghsa_id = f"CERT-TR-{cve_primary.upper()}"
 
     # Extra CVEs beyond primary
     extra_cves = [c for c in cves if c != cve_primary]
@@ -332,13 +321,8 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
     # also include siberguvenlik portal (generic)
     refs.append("https://siberguvenlik.gov.tr")
 
-    # Links: html_url fallback to siberguvenlik
-    html_url = ""
-    if cve_primary:
-        # placeholder deep link not known; use NVD
-        html_url = f"https://nvd.nist.gov/vuln/detail/{cve_primary}"
-    else:
-        html_url = "https://siberguvenlik.gov.tr"
+    # Links: CVE-based NVD link (strict CVE-only)
+    html_url = f"https://nvd.nist.gov/vuln/detail/{cve_primary}"
 
     # Severity: try to infer from text (kritik/yüksek/orta/düşük)
     severity = None

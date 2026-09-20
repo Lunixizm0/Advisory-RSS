@@ -1,3 +1,4 @@
+import imaplib
 from unittest.mock import MagicMock, patch
 
 from advisory_rss.cert_tr.imap import fetch_raw_emails
@@ -54,7 +55,49 @@ def test_fetch_multi_account_distinct_folders():
         m1 = _mock_imap([SAMPLE_RAW])
         m2 = _mock_imap([SAMPLE_RAW])
         mock_connect.side_effect = [m1, m2]
-        r1 = fetch_raw_emails(accs[0], ["siberguvenlik.gov.tr"], max_mails=1)
-        r2 = fetch_raw_emails(accs[1], ["siberguvenlik.gov.tr"], max_mails=1)
+        assert fetch_raw_emails(accs[0], ["siberguvenlik.gov.tr"], max_mails=1) is not None
+        assert fetch_raw_emails(accs[1], ["siberguvenlik.gov.tr"], max_mails=1) is not None
         assert m1.select.call_args[0][0] == "INBOX"
         assert m2.select.call_args[0][0] == "INBOX.CERT-TR"
+
+
+def test_gmail_host_allowed_and_proton_loopback():
+    from advisory_rss.cert_tr.imap import ALLOWED_HOSTS, connect_imap
+
+    assert "imap.gmail.com" in ALLOWED_HOSTS
+    assert "127.0.0.1" in ALLOWED_HOSTS
+
+    # Gmail host should be allowed (mock network to avoid real connection)
+    with patch("advisory_rss.cert_tr.imap.imaplib.IMAP4_SSL") as mock_ssl:
+        mock_inst = MagicMock()
+        mock_inst.login.side_effect = imaplib.IMAP4.error("mock auth fail")
+        mock_ssl.return_value = mock_inst
+        try:
+            connect_imap(
+                {
+                    "host": "imap.gmail.com",
+                    "port": "993",
+                    "security": "SSL",
+                    "email": "test@gmail.com",
+                    "password": "bad",
+                }
+            )
+        except imaplib.IMAP4.error:
+            pass  # expected login failure, host was allowed
+        except ValueError as ve:
+            raise AssertionError(f"imap.gmail.com should be allowed, got {ve}") from ve
+
+    # Evil host should be rejected before network
+    try:
+        connect_imap(
+            {
+                "host": "evil.com",
+                "port": "993",
+                "security": "SSL",
+                "email": "test@gmail.com",
+                "password": "bad",
+            }
+        )
+        raise AssertionError("evil host should be rejected")
+    except ValueError as ve:
+        assert "IMAP host" in str(ve)

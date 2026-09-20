@@ -1,5 +1,4 @@
-"""Proton Bridge IMAP fetcher - localhost only, never marks read."""
-# ruff: noqa: BLE001, DTZ003, S110, RUF059
+"""IMAP fetcher for CERT-TR mails via Proton Bridge and Gmail (never marks read)."""
 
 from __future__ import annotations
 
@@ -7,17 +6,33 @@ import imaplib
 import logging
 import ssl
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+# Allowed IMAP hosts: Proton Bridge loopback + Gmail
+ALLOWED_HOSTS = {
+    "127.0.0.1",
+    "::1",
+    "localhost",
+    "imap.gmail.com",
+    "imap.googlemail.com",
+}
 
 # Never mark read: we always use BODY.PEEK and SELECT readonly=True
 
 
-def _ssl_context() -> ssl.SSLContext:
+def _ssl_context_for_host(host: str) -> ssl.SSLContext:
+    # Proton Bridge uses self-signed cert -> no verification
+    if host in {"127.0.0.1", "::1", "localhost"}:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    # Gmail and others -> verify
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx.check_hostname = True
+    ctx.verify_mode = ssl.CERT_REQUIRED
     return ctx
 
 
@@ -28,24 +43,21 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
     email = account.get("email", "")
     password = account.get("password", "")
 
-    # Loopback guard - only allow loopback
-    if host not in ("127.0.0.1", "::1", "localhost"):
-        raise ValueError(f"Proton IMAP host must be loopback, got {host!r}")
+    if host not in ALLOWED_HOSTS:
+        raise ValueError(f"IMAP host must be one of {sorted(ALLOWED_HOSTS)}, got {host!r}")
 
-    ctx = _ssl_context()
+    ctx = _ssl_context_for_host(host)
     if security == "SSL":
         mail = imaplib.IMAP4_SSL(host, port, ssl_context=ctx)
     elif security == "STARTTLS":
         mail = imaplib.IMAP4(host, port)
         try:
             mail.starttls(ssl_context=ctx)
-        except Exception as e:
+        except (OSError, imaplib.IMAP4.error, ssl.SSLError) as e:
             logger.warning("STARTTLS failed for %s:%s - trying without TLS: %s", host, port, e)
-            # already connected without TLS; still try login
     else:  # NONE
         mail = imaplib.IMAP4(host, port)
 
-    # Login - Bridge password is not Proton account password
     try:
         mail.login(email, password)
     except imaplib.IMAP4.error as e:
@@ -57,16 +69,11 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
 
 def _build_search_criteria(allowlist: list[str], search_days: int | None) -> list[str]:
     parts: list[str] = []
-    # FROM filter - build OR chain if multiple
     if allowlist:
-        # Use first allowlist entry for server-side filter; rest filtered client-side to keep simple
-        # Or build OR for 2 entries max? We'll use first dominant domain
         domain = allowlist[0]
-        # IMAP FROM search is substring match; domain is enough
         parts.append(f'FROM "{domain}"')
     if search_days is not None and search_days >= 0:
-        # SINCE date is inclusive
-        since_date = (datetime.utcnow() - timedelta(days=search_days)).strftime("%d-%b-%Y")
+        since_date = (datetime.now(UTC) - timedelta(days=search_days)).strftime("%d-%b-%Y")
         parts.append(f'SINCE "{since_date}"')
     if not parts:
         parts.append("ALL")
@@ -79,7 +86,7 @@ def fetch_raw_emails(
     max_mails: int = 200,
     search_days: int | None = None,
 ) -> list[bytes]:
-    """Fetch raw RFC822 bytes for one Proton account, never marking as read.
+    """Fetch raw RFC822 bytes for one account, never marking as read.
 
     Returns list of raw bytes, newest first (reverse UID).
     Handles reconnect every 25 to avoid Bridge drops.
@@ -91,14 +98,12 @@ def fetch_raw_emails(
     mail = None
     try:
         mail = connect_imap(account)
-        # Select readonly to guarantee no \Seen flag can be set even on bug
         typ: str = ""
         data: list[bytes] = []
         try:
             typ, data = mail.select(folder, readonly=True)  # type: ignore[assignment]
-        except imaplib.IMAP4.error as e:  # noqa: BLE001
+        except imaplib.IMAP4.error as e:
             logger.warning("IMAP select folder %r failed for %s: %s", folder, email, e)
-            # try INBOX fallback
             if folder.upper() != "INBOX":
                 try:
                     typ2, _data2 = mail.select("INBOX", readonly=True)  # type: ignore[assignment]
@@ -108,7 +113,8 @@ def fetch_raw_emails(
                         typ, data = typ2, _data2  # type: ignore[assignment]
                     else:
                         return []
-                except Exception:  # noqa: BLE001
+                except (OSError, imaplib.IMAP4.error) as fallback_e:
+                    logger.debug("Fallback select failed for %s: %s", email, fallback_e)
                     return []
             else:
                 return []
@@ -116,15 +122,11 @@ def fetch_raw_emails(
             logger.warning("IMAP select %r returned %s for %s: %s", folder, typ, email, data)
             return []
 
-        # Build search
         criteria = _build_search_criteria(allowlist, search_days)
-        # IMAP search: join with space (AND)
         search_query = " ".join(criteria) if len(criteria) == 1 else "(" + " ".join(criteria) + ")"
-        # Actually need to handle OR case; simplified to single FROM
         if len(allowlist) > 1:
-            # Client-side filter fallback: search with SINCE only or ALL, then filter
             if search_days is not None:
-                search_query = f'SINCE "{(datetime.utcnow() - timedelta(days=search_days)).strftime("%d-%b-%Y")}"'
+                search_query = f'SINCE "{(datetime.now(UTC) - timedelta(days=search_days)).strftime("%d-%b-%Y")}"'
             else:
                 search_query = "ALL"
 
@@ -140,33 +142,24 @@ def fetch_raw_emails(
         uids = data[0].split()
         if not uids:
             return []
-        # Newest first: reverse UID list (UIDs increase)
         uids = list(reversed(uids))
-        # Respect max_mails (per account)
         if len(uids) > max_mails:
             uids = uids[:max_mails]
 
-        # Client-side allowlist filtering if we used ALL fallback
-        # We'll still fetch and filter by From header later in parser, but to avoid fetching too many,
-        # we can peek headers first for From? Simpler: fetch all and let parser filter.
-        # For >1 allowlist and fallback ALL, we will filter after fetch via From header check.
-
-        # Batch fetch with reconnect every 25
         batch_size = 25
         fetched = 0
         for i in range(0, len(uids), batch_size):
             batch = uids[i : i + batch_size]
-            # reconnect every batch after first to avoid Bridge drops
             if i > 0:
                 try:
                     mail.logout()
-                except Exception:
-                    pass
+                except (OSError, imaplib.IMAP4.error) as e:
+                    logger.debug("Logout during reconnect failed for %s: %s", email, e)
                 time.sleep(0.3)
                 try:
                     mail = connect_imap(account)
                     mail.select(folder, readonly=True)
-                except Exception as e:
+                except (OSError, imaplib.IMAP4.error, ssl.SSLError, ValueError) as e:
                     logger.warning("IMAP reconnect failed %s batch %d: %s", email, i, e)
                     break
 
@@ -176,7 +169,6 @@ def fetch_raw_emails(
                     typ, fdata = mail.fetch(uid_str, "(BODY.PEEK[])")
                     if typ != "OK" or not fdata:
                         continue
-                    # fdata is list of tuples; extract raw bytes
                     for item in fdata:
                         if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], bytes):
                             raw_list.append(item[1])
@@ -185,24 +177,36 @@ def fetch_raw_emails(
                             raw_list.append(item)
                             fetched += 1
                 except imaplib.IMAP4.error as e:
-                    logger.debug("IMAP fetch uid %s failed %s: %s", uid.decode(errors="ignore"), email, e)
+                    try:
+                        uid_s = uid.decode(errors="ignore") if isinstance(uid, bytes) else str(uid)
+                    except (ValueError, UnicodeDecodeError) as de:
+                        uid_s = str(uid)
+                        logger.debug("UID decode failed: %s", de)
+                    logger.debug("IMAP fetch uid %s failed %s: %s", uid_s, email, e)
                     continue
-                except Exception as e:
+                except (OSError, ValueError, RuntimeError) as e:
                     logger.warning("IMAP fetch unexpected %s: %s", email, e)
                     continue
 
-        logger.info("IMAP fetch done %s/%r: requested %d, fetched %d raw", email, folder, len(uids), len(raw_list))
+        logger.info(
+            "IMAP fetch done %s/%r: requested %d, fetched %d raw",
+            email,
+            folder,
+            len(uids),
+            len(raw_list),
+        )
         return raw_list
 
-    except Exception as e:
+    except (OSError, imaplib.IMAP4.error, ssl.SSLError, ValueError, RuntimeError) as e:
         logger.warning("IMAP fetch_raw_emails failed %s/%r: %s", email, folder, e, exc_info=True)
         return []
     finally:
         if mail is not None:
             try:
                 mail.logout()
-            except Exception:
+            except (OSError, imaplib.IMAP4.error) as e:
+                logger.debug("Final logout failed for %s: %s", email, e)
                 try:
                     mail.close()
-                except Exception:
-                    pass
+                except (OSError, imaplib.IMAP4.error) as close_e:
+                    logger.debug("Final close failed for %s: %s", email, close_e)

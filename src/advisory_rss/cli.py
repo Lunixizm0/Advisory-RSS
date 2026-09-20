@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-# ruff: noqa: BLE001, S110
 import asyncio
 import getpass
 import logging
@@ -44,7 +43,8 @@ def configure_logging(
         # Prefer explicit args, else settings
         lf = log_file if log_file is not None else getattr(settings, "log_file", None)
         fmt = log_format if log_format != "text" else getattr(settings, "log_format", "text")
-    except Exception:
+    except (OSError, ValueError, RuntimeError, AttributeError) as e:
+        logger.debug("Failed to load settings for logging config: %s", e)
         lf = log_file
         fmt = log_format
     _setup_logging(level, log_file=lf, log_format=fmt, force=force, use_stderr=use_stderr)
@@ -188,7 +188,7 @@ def sync(source: str = "all") -> None:
                     click.echo(f"Latest GitHub: {advs[0].ghsa_id} - {advs[0].summary[:80]}")
             except AuthError as e:
                 msg = _redact(str(e))
-                logger.error("GitHub sync auth error: %s", msg, exc_info=True)
+                logger.exception("GitHub sync auth error: %s", msg)
                 click.echo(f"GitHub Auth error (401): {msg}", err=True)
                 cache.mark_error(msg)
                 if source == "github":
@@ -209,7 +209,7 @@ def sync(source: str = "all") -> None:
                 combined_diag["errors"].append(msg)
             except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
                 msg = _redact(str(e))
-                logger.error("GitHub sync failed: %s", msg, exc_info=True)
+                logger.exception("GitHub sync failed: %s", msg)
                 click.echo(f"GitHub sync failed: {msg}", err=True)
                 cache.mark_error(msg)
                 if source == "github":
@@ -240,7 +240,7 @@ def sync(source: str = "all") -> None:
                             click.echo(f"  CERT-TR warn: {_redact(e)}", err=True)
             except (OSError, ValueError, RuntimeError) as e:
                 msg = _redact(str(e))
-                logger.error("CERT-TR sync failed: %s", msg, exc_info=True)
+                logger.exception("CERT-TR sync failed: %s", msg)
                 click.echo(f"CERT-TR sync failed: {msg}", err=True)
                 cache.mark_error(msg)
                 if source == "cert-tr":
@@ -280,8 +280,8 @@ def sync(source: str = "all") -> None:
 
             if combined_diag.get("cert_tr"):
                 cache.set_meta("cert_tr_diag", json.dumps(combined_diag["cert_tr"], ensure_ascii=False))
-        except Exception:
-            pass
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            logger.debug("Failed to persist cert_tr_diag: %s", e)
         click.echo(f"Sync OK - {count} advisories upserted total ({len(all_advisories)} fetched before dedup)")
         if combined_diag["errors"]:
             click.echo(f"Warnings ({len(combined_diag['errors'])}):", err=True)
@@ -491,7 +491,7 @@ def serve(
                 use_stderr=False,
             )
             logger.info("daemon child logging reconfigured file=%s", log_file)
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError) as e:
             print(f"daemon logging reconfigure failed: {e}", file=sys.stderr)
 
     # Import uvicorn late
@@ -620,8 +620,8 @@ def _status() -> None:
         cert_c = sum(1 for a in all_adv if getattr(a, "source", "") == "cert-tr")
         click.echo(f"  - GitHub: {github_c}")
         click.echo(f"  - CERT-TR: {cert_c}")
-    except Exception:
-        pass
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.debug("Failed to load per-source breakdown: %s", e)
     click.echo(f"Last sync:      {meta.last_successful_sync or 'never'}")
     click.echo(f"Next sync:      {meta.next_scheduled_sync or 'not scheduled'}")
     click.echo(f"Rate limited until: {meta.rate_limited_until or 'no'}")
@@ -633,11 +633,12 @@ def _status() -> None:
     click.echo(f"Max items (RSS): {settings.max_items}")
     click.echo(f"CERT-TR enabled: {settings.enable_cert_tr}")
     if settings.enable_cert_tr:
-        accs = settings.get_proton_accounts()
+        accs = settings.get_cert_tr_accounts()
         click.echo(f"CERT-TR accounts: {len(accs)}")
         for a in accs:
             # Never show password
-            click.echo(f"  - {a['email']} -> folder={a['folder']} host={a['host']}:{a['port']} sec={a['security']}")
+            prov = a.get("provider", "unknown")
+            click.echo(f"  - [{prov}] {a['email']} -> folder={a['folder']} host={a['host']}:{a['port']} sec={a['security']}")
         click.echo(f"CERT-TR allowlist: {settings.cert_tr_sender_allowlist}")
         click.echo(f"CERT-TR max mails: {settings.cert_tr_max_mails}  search_days: {settings.cert_tr_search_days or 'all'}")
         diag_raw = cache.get_meta("cert_tr_diag")

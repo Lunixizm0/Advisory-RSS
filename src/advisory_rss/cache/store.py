@@ -90,11 +90,18 @@ class CacheStore:
                             logger.debug("migration backfill skipped %s: %s", ghsa_id, ee)
                 except sqlite3.Error as ee:
                     logger.debug("backfill query failed: %s", ee)
+                # Cleanup legacy false positives: non-CVE CERT-TR entries (hash-based IDs)
+                try:
+                    cur = self._conn.execute("DELETE FROM advisories WHERE ghsa_id LIKE 'CERT-TR-MSG-%'")
+                    if cur.rowcount and cur.rowcount > 0:
+                        logger.info("Cleaned up %d legacy CERT-TR non-CVE advisories", cur.rowcount)
+                except sqlite3.Error as ce:
+                    logger.debug("Cleanup legacy advisories failed: %s", ce)
             except sqlite3.Error as me:
                 logger.warning("Migration check failed: %s", me)
             logger.debug("cache schema ready db=%s", self.db_path)
-        except sqlite3.Error as e:
-            logger.error("Cache schema init failed: %s", e, exc_info=True)
+        except sqlite3.Error:
+            logger.exception("Cache schema init failed")
 
     def upsert_advisories(self, advisories: list[NormalizedAdvisory]) -> int:
         """Upsert list; returns count. Uses parameterized queries."""
@@ -141,8 +148,8 @@ class CacheStore:
                         logger.warning("Failed to upsert %s: %s", adv.ghsa_id, e)
                 cur.execute("COMMIT")
                 logger.info("upsert_advisories committed count=%d", count)
-            except sqlite3.Error as e:
-                logger.error("Cache upsert transaction failed: %s", e, exc_info=True)
+            except sqlite3.Error:
+                logger.exception("Cache upsert transaction failed")
                 try:
                     self._conn.execute("ROLLBACK")
                 except sqlite3.Error:
@@ -163,8 +170,8 @@ class CacheStore:
                         logger.warning("Corrupt cache row skipped: %s", e)
                 logger.debug("load_all fetched %d rows -> %d advisories", len(rows), len(out))
                 return out
-            except sqlite3.Error as e:
-                logger.error("Cache load failed: %s", e, exc_info=True)
+            except sqlite3.Error:
+                logger.exception("Cache load failed")
                 return []
 
     def load_sorted(self, limit: int | None = None) -> list[NormalizedAdvisory]:
@@ -199,8 +206,8 @@ class CacheStore:
                 self._conn.execute("DELETE FROM etags")
                 self._conn.execute("COMMIT")
                 logger.info("cache cleared")
-            except sqlite3.Error as e:
-                logger.error("Cache clear failed: %s", e, exc_info=True)
+            except sqlite3.Error:
+                logger.exception("Cache clear failed")
                 try:
                     self._conn.execute("ROLLBACK")
                 except sqlite3.Error:

@@ -1,8 +1,8 @@
 """CERT-TR source orchestrator: IMAP fetch -> parser -> NormalizedAdvisory list."""
-# ruff: noqa: BLE001
 
 from __future__ import annotations
 
+import imaplib
 import logging
 from typing import Any
 
@@ -35,9 +35,9 @@ class CertTrSource:
             logger.debug("CERT-TR disabled (ENABLE_CERT_TR=false)")
             return [], diag
 
-        accounts = self.settings.get_proton_accounts()
+        accounts = self.settings.get_cert_tr_accounts()
         if not accounts:
-            msg = "ENABLE_CERT_TR=true but no PROTON_BRIDGE_EMAIL/EMAILS configured"
+            msg = "ENABLE_CERT_TR=true but no PROTON_BRIDGE_EMAIL/EMAILS or GMAIL_EMAIL/EMAILS configured"
             logger.warning(msg)
             diag["errors"].append(msg)
             return [], diag
@@ -48,24 +48,25 @@ class CertTrSource:
 
         all_advs: list[NormalizedAdvisory] = []
         per_account_max = max_mails
-        # If multiple accounts, distribute budget
         if len(accounts) > 1:
             per_account_max = max(20, max_mails // len(accounts))
 
         for acc in accounts:
             email = acc.get("email", "unknown")
             folder = acc.get("folder", "INBOX")
-            # Validate credentials
+            provider = acc.get("provider", "unknown")
             if not acc.get("password"):
-                msg = f"Proton account {email}/{folder}: missing PROTON_BRIDGE_PASSWORD - skipping"
+                msg = f"{provider} account {email}/{folder}: missing password/app-password - skipping"
                 logger.warning(msg)
                 diag["errors"].append(msg)
                 continue
             diag["accounts"] += 1
             try:
-                raw_list = cert_imap.fetch_raw_emails(acc, allowlist, max_mails=per_account_max, search_days=search_days)
-            except Exception as e:
-                msg = f"IMAP error {email}/{folder}: {e}"
+                raw_list = cert_imap.fetch_raw_emails(
+                    acc, allowlist, max_mails=per_account_max, search_days=search_days
+                )
+            except (OSError, ValueError, RuntimeError, imaplib.IMAP4.error) as e:
+                msg = f"IMAP error {email}/{folder} ({provider}): {e}"
                 logger.warning(msg)
                 diag["errors"].append(msg)
                 continue
@@ -76,16 +77,13 @@ class CertTrSource:
                     adv = parse_cert_tr_email(raw)
                     if not adv:
                         continue
-                    # Sender filter (allowlist) - parser already extracts from raw header via raw["from"]
-                    # Need to re-check using parsed adv's author_login / raw sender
                     from_hdr = adv.raw.get("from") or adv.author_login or ""
                     if allowlist and not is_cert_tr_sender(from_hdr, allowlist):
                         diag["filtered_sender"] += 1
                         continue
-                    # Also filter by folder? No, folder already limits
                     all_advs.append(adv)
                     diag["parsed"] += 1
-                except Exception as e:
+                except (ValueError, TypeError, AttributeError) as e:
                     logger.debug("parse_cert_tr_email failed: %s", e, exc_info=True)
                     continue
 

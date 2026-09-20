@@ -1,5 +1,4 @@
 # FastAPI app factory
-# ruff: noqa: BLE001, S110
 
 from __future__ import annotations
 
@@ -118,7 +117,8 @@ def create_app(
             all_advs = cache.load_all()
             github_count = sum(1 for a in all_advs if (getattr(a, "source", "github") or "github") == "github")
             cert_tr_count = sum(1 for a in all_advs if getattr(a, "source", "") == "cert-tr")
-        except Exception:
+        except (OSError, ValueError, RuntimeError, AttributeError) as e:
+            logger.debug("Failed to load per-source counts: %s", e)
             github_count = None
             cert_tr_count = None
         # cert_tr diag
@@ -129,8 +129,8 @@ def create_app(
             raw = cache.get_meta("cert_tr_diag")
             if raw:
                 cert_tr_diag = json.loads(raw)
-        except Exception:
-            pass
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            logger.debug("Failed to load cert_tr_diag: %s", e)
         return JSONResponse(
             content={
                 "status": "ok" if not meta.rate_limited_until else "rate_limited",
@@ -138,7 +138,7 @@ def create_app(
                 "github_count": github_count,
                 "cert_tr_count": cert_tr_count,
                 "cert_tr_enabled": settings.enable_cert_tr,
-                "cert_tr_accounts": len(settings.get_proton_accounts()) if settings.enable_cert_tr else 0,
+                "cert_tr_accounts": len(settings.get_cert_tr_accounts()) if settings.enable_cert_tr else 0,
                 "cert_tr_diag": cert_tr_diag,
                 "last_successful_sync": meta.last_successful_sync,
                 "next_scheduled_sync": meta.next_scheduled_sync,
@@ -308,8 +308,8 @@ def create_app(
 
                 if diag_comb.get("cert_tr"):
                     cache.set_meta("cert_tr_diag", json.dumps(diag_comb["cert_tr"], ensure_ascii=False))
-            except Exception:
-                pass
+            except (OSError, ValueError, TypeError, RuntimeError) as e:
+                logger.debug("Failed to persist cert_tr_diag: %s", e)
             logger.info("POST /refresh ok: count=%d", count, extra={"diag": diag_comb})
             return JSONResponse(
                 content={
@@ -333,7 +333,6 @@ def create_app(
             "Unhandled error on %s: %s",
             request.url.path,
             _redact(str(exc)),
-            exc_info=True,
         )
         return JSONResponse(
             status_code=500,
@@ -366,9 +365,9 @@ async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None
         if not token and not settings.enable_cert_tr:
             logger.info("Background refresh skipped - no token and CERT-TR disabled")
             continue
-        # Also skip if CERT-TR enabled but no Proton accounts and no token => nothing to do
-        if not token and settings.enable_cert_tr and not settings.get_proton_accounts():
-            logger.info("Background refresh skipped - CERT-TR enabled but no Proton accounts and no GitHub token")
+        # Also skip if CERT-TR enabled but no IMAP accounts and no token => nothing to do
+        if not token and settings.enable_cert_tr and not settings.get_cert_tr_accounts():
+            logger.info("Background refresh skipped - CERT-TR enabled but no IMAP accounts and no GitHub token")
             continue
         try:
             all_advs = []
@@ -423,13 +422,14 @@ async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None
 
                     if cert_diag is not None:
                         cache.set_meta("cert_tr_diag", json.dumps(cert_diag, ensure_ascii=False))
-                except Exception:
-                    pass
+                except (OSError, ValueError, TypeError, RuntimeError) as e:
+                    logger.debug("Failed to persist cert_diag in background: %s", e)
                 gh_count = 0
                 if isinstance(github_diag, dict):
                     try:
                         gh_count = int(github_diag.get("filtered_count") or 0)
-                    except Exception:
+                    except (ValueError, TypeError) as e:
+                        logger.debug("Failed to parse gh_count: %s", e)
                         gh_count = 0
                 ct_count = int(cert_diag.get("parsed") or 0) if isinstance(cert_diag, dict) else 0
                 logger.info(

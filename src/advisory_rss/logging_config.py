@@ -18,6 +18,8 @@ from advisory_rss.config.constants import (
 
 _TOKEN_RE = re.compile(TOKEN_REDACT_PATTERN)
 
+logger = logging.getLogger(__name__)
+
 
 def _redact(s: str) -> str:
     return _TOKEN_RE.sub("***", s)
@@ -142,7 +144,8 @@ class JsonFormatter(logging.Formatter):
                         extras[k] = _redact(v)
                     else:
                         extras[k] = v
-                except Exception:
+                except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+                    logger.debug("Redact extra %s failed: %s", k, e)
                     extras[k] = str(v)
         if extras:
             payload["extra"] = extras
@@ -226,8 +229,8 @@ def setup_logging(
         root.removeHandler(h)
         try:
             h.close()
-        except Exception:
-            pass
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.debug("Handler close failed: %s", e)
 
     # Choose formatter
     if fmt_str == "json":
@@ -341,5 +344,5 @@ def reset_logging_for_tests() -> None:
         root.removeHandler(h)
         try:
             h.close()
-        except Exception:
-            pass
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.debug("Handler close failed in reset: %s", e)
