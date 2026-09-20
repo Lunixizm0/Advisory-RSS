@@ -42,6 +42,12 @@ DEFAULT_GMAIL_IMAP_SECURITY = "SSL"
 DEFAULT_GMAIL_FOLDER = "INBOX"
 DEFAULT_CERT_TR_SENDER_ALLOWLIST = "siberguvenlik.gov.tr"
 
+# Gmail OAuth
+GMAIL_OAUTH_SCOPES = ["https://mail.google.com/"]
+GMAIL_OAUTH_TOKEN_URI = "https://oauth2.googleapis.com/token"
+GMAIL_OAUTH_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
+DEFAULT_GMAIL_OAUTH_CACHE = "cache/gmail_oauth.json"
+
 # Security
 TOKEN_REDACT_PATTERN = r"(gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+)"
 

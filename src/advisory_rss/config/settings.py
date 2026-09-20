@@ -19,6 +19,7 @@ from advisory_rss.config.constants import (
     DEFAULT_GMAIL_IMAP_HOST,
     DEFAULT_GMAIL_IMAP_PORT,
     DEFAULT_GMAIL_IMAP_SECURITY,
+    DEFAULT_GMAIL_OAUTH_CACHE,
     DEFAULT_LOG_FORMAT,
     DEFAULT_LOG_LEVEL,
     DEFAULT_MAX_ITEMS,
@@ -161,6 +162,22 @@ class Settings(BaseSettings):
     )
     gmail_imap_folders: str | None = Field(
         default=None, validation_alias="GMAIL_IMAP_FOLDERS"
+    )
+    # Gmail OAuth (alternative to App Password, per-account refresh token)
+    gmail_oauth_client_id: str | None = Field(
+        default=None, validation_alias="GMAIL_OAUTH_CLIENT_ID"
+    )
+    gmail_oauth_client_secret: str | None = Field(
+        default=None, validation_alias="GMAIL_OAUTH_CLIENT_SECRET"
+    )
+    gmail_oauth_refresh_token: str | None = Field(
+        default=None, validation_alias="GMAIL_OAUTH_REFRESH_TOKEN"
+    )
+    gmail_oauth_refresh_tokens: str | None = Field(
+        default=None, validation_alias="GMAIL_OAUTH_REFRESH_TOKENS"
+    )
+    gmail_oauth_token_file: str = Field(
+        default=DEFAULT_GMAIL_OAUTH_CACHE, validation_alias="GMAIL_OAUTH_TOKEN_FILE"
     )
     # Optional: per-account JSON-like override not needed; plural fields suffice
     cert_tr_sender_allowlist: str = Field(
@@ -428,6 +445,19 @@ class Settings(BaseSettings):
         parts = re.split(r"[,\s;]+", raw.strip())
         return [p.strip() for p in parts if p.strip()]
 
+    def _split_folders(self, raw: str | None) -> list[str]:
+        if not raw or not raw.strip():
+            return []
+        import re
+
+        # Split only on comma/semicolon to preserve spaces inside folder names (e.g., "CVE Yazışmaları")
+        parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
+        if len(parts) <= 1 and "," not in raw and ";" not in raw:
+            # Fallback for backward compat where folders were space-separated without comma
+            # Only if no comma/semicolon present, split on whitespace/comma/semicolon
+            parts = [p.strip() for p in re.split(r"[,\s;]+", raw.strip()) if p.strip()]
+        return parts
+
     def get_proton_accounts(self) -> list[dict[str, str]]:
         """Resolve multi-account Proton config.
 
@@ -449,14 +479,14 @@ class Settings(BaseSettings):
             if self.proton_bridge_passwords:
                 passwords = self._split_list(self.proton_bridge_passwords)
             if self.proton_imap_folders:
-                folders = self._split_list(self.proton_imap_folders)
+                folders = self._split_folders(self.proton_imap_folders)
         elif self.proton_bridge_email and self.proton_bridge_email.strip():
             emails = [self.proton_bridge_email.strip()]
             if self.proton_bridge_password:
                 passwords = [self.proton_bridge_password.strip()]
             # folder for single: use explicit plural if set else singular
             if self.proton_imap_folders and self.proton_imap_folders.strip():
-                folders = self._split_list(self.proton_imap_folders)
+                folders = self._split_folders(self.proton_imap_folders)
             else:
                 folders = [self.proton_imap_folder.strip() or DEFAULT_PROTON_FOLDER]
         else:
@@ -468,6 +498,23 @@ class Settings(BaseSettings):
         # If single password provided but multiple emails, reuse it
         if len(passwords) == 1 and len(emails) > 1:
             passwords = passwords * len(emails)
+        # Handle single email with multiple folders: create one account per folder
+        if len(emails) == 1 and len(folders) > 1:
+            single_email = emails[0]
+            single_pw = passwords[0] if passwords else (self.proton_bridge_password or "")
+            for folder in folders:
+                folder = folder.strip() or default_folder
+                out.append(
+                    {
+                        "email": single_email.strip(),
+                        "password": (single_pw or "").strip(),
+                        "folder": folder,
+                        "host": (self.proton_bridge_host or DEFAULT_PROTON_IMAP_HOST).strip(),
+                        "port": str(self.proton_imap_port),
+                        "security": (self.proton_imap_security or DEFAULT_PROTON_IMAP_SECURITY).strip().upper(),
+                    }
+                )
+            return out
         for idx, email in enumerate(emails):
             if not email or "@" not in email:
                 continue
@@ -495,53 +542,162 @@ class Settings(BaseSettings):
             )
         return out
 
+    def _load_gmail_oauth_file_tokens(self) -> dict[str, object]:
+        """Load Gmail OAuth tokens from JSON file (cache/gmail_oauth.json).
+
+        File format: {"client_id": "...", "client_secret": "...", "accounts": {"a@gmail.com": {"refresh_token": "..."}}}
+        or flat: {"a@gmail.com": "refresh_token", ...}
+        Returns dict with keys possibly containing 'accounts' or direct email->token.
+        """
+        import json
+        import logging
+        from pathlib import Path
+        try:
+            path = Path(self.gmail_oauth_token_file)
+            if not path.exists():
+                return {}
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            logging.getLogger(__name__).debug("Failed to load Gmail OAuth file %s: %s", self.gmail_oauth_token_file, e)
+            return {}
+
     def get_gmail_accounts(self) -> list[dict[str, str]]:
         """Resolve Gmail IMAP accounts for CERT-TR.
 
-        Supports single (GMAIL_EMAIL + GMAIL_APP_PASSWORD) and
-        multi (GMAIL_EMAILS, GMAIL_APP_PASSWORDS comma-separated,
-        GMAIL_IMAP_FOLDERS).  Host/port/security are shared per Gmail
-        config (defaults imap.gmail.com:993 SSL).
-        Each account is {email,password,folder,host,port,security,provider}.
+        Supports:
+          - App Password: single (GMAIL_EMAIL + GMAIL_APP_PASSWORD) and
+            multi (GMAIL_EMAILS, GMAIL_APP_PASSWORDS comma-separated,
+            GMAIL_IMAP_FOLDERS).  Host/port/security are shared per Gmail
+            config (defaults imap.gmail.com:993 SSL).
+          - OAuth: GMAIL_OAUTH_CLIENT_ID/SECRET + GMAIL_OAUTH_REFRESH_TOKEN(S)
+            or cache/gmail_oauth.json. For each email, if a refresh token
+            exists (env or file), the account will use XOAUTH2 (auth_method=oath).
+            Otherwise App Password is used.
+        Each account is {email,password,folder,host,port,security,provider,auth_method,
+                         oauth_client_id,oauth_client_secret,oauth_refresh_token}.
         """
         emails: list[str] = []
         passwords: list[str] = []
         folders: list[str] = []
+        oauth_refresh_tokens: list[str] = []
 
-        # Helper to split passwords preserving internal spaces (comma-only)
         def _split_passwords(raw: str | None) -> list[str]:
             if not raw or not raw.strip():
                 return []
-            # split only on comma, keep internal spaces
             parts = [p.strip() for p in raw.split(",")]
             return [p for p in parts if p]
 
+        # Determine emails source
         if self.gmail_emails and self.gmail_emails.strip():
             emails = self._split_list(self.gmail_emails)
             if self.gmail_app_passwords:
                 passwords = _split_passwords(self.gmail_app_passwords)
-            elif self.gmail_app_password or self.gmail_password:
-                # single fallback handled later
-                pass
+            if self.gmail_oauth_refresh_tokens:
+                oauth_refresh_tokens = _split_passwords(self.gmail_oauth_refresh_tokens)
+            elif self.gmail_oauth_refresh_token:
+                oauth_refresh_tokens = [self.gmail_oauth_refresh_token.strip()]
             if self.gmail_imap_folders:
-                folders = self._split_list(self.gmail_imap_folders)
+                folders = self._split_folders(self.gmail_imap_folders)
         elif self.gmail_email and self.gmail_email.strip():
             emails = [self.gmail_email.strip()]
-            # Prefer app password, fallback to GMAIL_PASSWORD alias
             pw = self.gmail_app_password or self.gmail_password
             if pw:
                 passwords = [pw.strip()]
+            # OAuth single
+            if self.gmail_oauth_refresh_tokens and self.gmail_oauth_refresh_tokens.strip():
+                oauth_refresh_tokens = _split_passwords(self.gmail_oauth_refresh_tokens)
+            elif self.gmail_oauth_refresh_token:
+                oauth_refresh_tokens = [self.gmail_oauth_refresh_token.strip()]
             if self.gmail_imap_folders and self.gmail_imap_folders.strip():
-                folders = self._split_list(self.gmail_imap_folders)
+                folders = self._split_folders(self.gmail_imap_folders)
             else:
                 folders = [self.gmail_imap_folder.strip() or DEFAULT_GMAIL_FOLDER]
         else:
-            return []
+            # Check OAuth file for accounts even if no env email
+            file_tokens = self._load_gmail_oauth_file_tokens()
+            # file may contain {"accounts": {"a@gmail.com": {"refresh_token": "..."}}}
+            accounts_map: dict[str, str] = {}
+            if isinstance(file_tokens, dict):
+                if "accounts" in file_tokens and isinstance(file_tokens["accounts"], dict):
+                    for em, info in file_tokens["accounts"].items():
+                        if isinstance(info, dict) and info.get("refresh_token"):
+                            accounts_map[em] = str(info["refresh_token"])
+                        elif isinstance(info, str):
+                            accounts_map[em] = info
+                else:
+                    # flat email->token
+                    for k, v in file_tokens.items():
+                        if "@" in k and isinstance(v, str):
+                            accounts_map[k] = v
+                        elif "@" in k and isinstance(v, dict) and v.get("refresh_token"):
+                            accounts_map[k] = str(v["refresh_token"])
+            if accounts_map:
+                emails = list(accounts_map.keys())
+                oauth_refresh_tokens = [accounts_map[e] for e in emails]
+                # folders will be default
+            else:
+                return []
 
+        # Also check file for additional OAuth tokens that may supplement env
+        file_tokens = self._load_gmail_oauth_file_tokens()
+        file_map: dict[str, str] = {}
+        if isinstance(file_tokens, dict):
+            if "accounts" in file_tokens and isinstance(file_tokens["accounts"], dict):
+                for em, info in file_tokens["accounts"].items():
+                    if isinstance(info, dict) and info.get("refresh_token"):
+                        file_map[em.lower()] = str(info["refresh_token"])
+                    elif isinstance(info, str):
+                        file_map[em.lower()] = info
+            else:
+                for k, v in file_tokens.items():
+                    if "@" in k:
+                        if isinstance(v, str):
+                            file_map[k.lower()] = v
+                        elif isinstance(v, dict) and v.get("refresh_token"):
+                            file_map[k.lower()] = str(v["refresh_token"])
+        # Also consider env file client_id/secret for file-based accounts
         out: list[dict[str, str]] = []
         default_folder = (self.gmail_imap_folder or DEFAULT_GMAIL_FOLDER).strip() or DEFAULT_GMAIL_FOLDER
         if len(passwords) == 1 and len(emails) > 1:
             passwords = passwords * len(emails)
+        if len(oauth_refresh_tokens) == 1 and len(emails) > 1:
+            oauth_refresh_tokens = oauth_refresh_tokens * len(emails)
+        # Handle single email with multiple folders: expand to multiple accounts
+        if len(emails) == 1 and len(folders) > 1:
+            single_email = emails[0]
+            single_pw = passwords[0] if passwords else (self.gmail_app_password or self.gmail_password or "")
+            single_oauth = oauth_refresh_tokens[0] if oauth_refresh_tokens else ""
+            for folder in folders:
+                folder = folder.strip() or default_folder
+                # Determine OAuth token for this folder (same for all folders of same email)
+                oauth_rt = single_oauth
+                # Also check file_map for this email
+                # file_map will be computed later, but for now handle simple
+                auth_method = "oauth" if oauth_rt else "password"
+                acct: dict[str, str] = {
+                    "email": single_email.strip(),
+                    "password": (single_pw or "").strip(),
+                    "folder": folder,
+                    "host": (self.gmail_imap_host or DEFAULT_GMAIL_IMAP_HOST).strip(),
+                    "port": str(self.gmail_imap_port),
+                    "security": (self.gmail_imap_security or DEFAULT_GMAIL_IMAP_SECURITY).strip().upper(),
+                    "provider": "gmail",
+                    "auth_method": auth_method,
+                }
+                if oauth_rt:
+                    acct["oauth_refresh_token"] = oauth_rt.strip()
+                    cid = self.gmail_oauth_client_id or ""
+                    csec = self.gmail_oauth_client_secret or ""
+                    if not cid and isinstance(file_tokens, dict) and file_tokens.get("client_id"):
+                        cid = str(file_tokens["client_id"])
+                    if not csec and isinstance(file_tokens, dict) and file_tokens.get("client_secret"):
+                        csec = str(file_tokens["client_secret"])
+                    acct["oauth_client_id"] = (cid or "").strip()
+                    acct["oauth_client_secret"] = (csec or "").strip()
+                    acct["oauth_token_file"] = (self.gmail_oauth_token_file or "").strip()
+                out.append(acct)
+            return out
         for idx, email in enumerate(emails):
             if not email or "@" not in email:
                 continue
@@ -551,24 +707,47 @@ class Settings(BaseSettings):
             elif passwords:
                 pw = passwords[0]
             else:
-                # fallback single
                 single_pw = self.gmail_app_password or self.gmail_password
                 pw = single_pw or ""
+            # Determine OAuth token for this email (env takes precedence, then file)
+            oauth_rt = ""
+            if idx < len(oauth_refresh_tokens) and oauth_refresh_tokens[idx]:
+                oauth_rt = oauth_refresh_tokens[idx]
+            elif file_map.get(email.lower()):
+                oauth_rt = file_map[email.lower()]
+            elif self.gmail_oauth_refresh_token and len(emails) == 1:
+                oauth_rt = self.gmail_oauth_refresh_token
             folder = default_folder
             if idx < len(folders) and folders[idx]:
                 folder = folders[idx]
             folder = folder.strip() or default_folder
-            out.append(
-                {
-                    "email": email.strip(),
-                    "password": pw.strip() if pw else "",
-                    "folder": folder,
-                    "host": (self.gmail_imap_host or DEFAULT_GMAIL_IMAP_HOST).strip(),
-                    "port": str(self.gmail_imap_port),
-                    "security": (self.gmail_imap_security or DEFAULT_GMAIL_IMAP_SECURITY).strip().upper(),
-                    "provider": "gmail",
-                }
-            )
+            # Decide auth method: prefer OAuth if refresh token present
+            auth_method = "oauth" if oauth_rt else "password"
+            # For OAuth, password is not used, but keep for fallback
+            acct: dict[str, str] = {
+                "email": email.strip(),
+                "password": pw.strip() if pw else "",
+                "folder": folder,
+                "host": (self.gmail_imap_host or DEFAULT_GMAIL_IMAP_HOST).strip(),
+                "port": str(self.gmail_imap_port),
+                "security": (self.gmail_imap_security or DEFAULT_GMAIL_IMAP_SECURITY).strip().upper(),
+                "provider": "gmail",
+                "auth_method": auth_method,
+            }
+            if oauth_rt:
+                acct["oauth_refresh_token"] = oauth_rt.strip()
+                # client_id/secret may be in env or file
+                cid = self.gmail_oauth_client_id or ""
+                csec = self.gmail_oauth_client_secret or ""
+                # also check file for client_id/secret
+                if not cid and isinstance(file_tokens, dict) and file_tokens.get("client_id"):
+                    cid = str(file_tokens["client_id"])
+                if not csec and isinstance(file_tokens, dict) and file_tokens.get("client_secret"):
+                    csec = str(file_tokens["client_secret"])
+                acct["oauth_client_id"] = (cid or "").strip()
+                acct["oauth_client_secret"] = (csec or "").strip()
+                acct["oauth_token_file"] = (self.gmail_oauth_token_file or "").strip()
+            out.append(acct)
         return out
 
     def get_cert_tr_accounts(self) -> list[dict[str, str]]:

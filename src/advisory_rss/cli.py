@@ -61,59 +61,420 @@ def auth() -> None:
     pass
 
 
+def _upsert_env_file(key: str, value: str, env_path: str = ".env") -> None:
+    """Create or update .env file with key=value (preserves other lines)."""
+    import re as _re2
+
+    p = Path(env_path)
+    lines: list[str] = []
+    if p.exists():
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()
+        except OSError as e:
+            logger.debug("Failed to read %s: %s", env_path, e)
+            lines = []
+    # Find existing key (case-insensitive for env var name, but keep case)
+    found = False
+    new_lines: list[str] = []
+    pattern = _re2.compile(rf"^\s*{_re2.escape(key)}\s*=", _re.IGNORECASE)
+    for line in lines:
+        if pattern.match(line):
+            if not found:
+                new_lines.append(f"{key}={value}")
+                found = True
+            # skip duplicate
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"{key}={value}")
+    try:
+        p.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        logger.info("Updated %s with %s", env_path, key)
+    except OSError as e:
+        logger.warning("Failed to write %s: %s", env_path, e)
+        click.echo(f"Warning: could not write {env_path}: {e}", err=True)
+
+
+def _prompt_provider(default: str | None = None) -> str:
+    choice = click.prompt(
+        "Hangi kaynak için giriş yapmak istiyorsun?",
+        type=click.Choice(["github", "proton", "gmail"], case_sensitive=False),
+        default=default or "github",
+        show_choices=True,
+    )
+    return str(choice).lower()
+
+
+def _prompt_gmail_method(default: str | None = None) -> str:
+    choice = click.prompt(
+        "Gmail için hangi yöntem? [oauth/app-password]",
+        type=click.Choice(["oauth", "app-password", "app"], case_sensitive=False),
+        default=default or "oauth",
+        show_choices=True,
+    )
+    c = str(choice).lower()
+    return "oauth" if c == "oauth" else "app-password"
+
+
 @auth.command("login")
-def auth_login() -> None:
+@click.option(
+    "--provider",
+    type=click.Choice(["github", "proton", "gmail"], case_sensitive=False),
+    default=None,
+    help="Hangi kaynak için login (github/proton/gmail). Belirtilmezse interaktif sorulur.",
+)
+@click.option(
+    "--method",
+    type=click.Choice(["oauth", "app-password"], case_sensitive=False),
+    default=None,
+    help="Gmail için yöntem (oauth veya app-password). Sadece gmail için.",
+)
+@click.option("--email", default=None, help="E-posta adresi (proton/gmail için)")
+def auth_login(provider: str | None = None, method: str | None = None, email: str | None = None) -> None:
     settings = get_settings()
     _setup_logging(settings.log_level, log_file=settings.log_file, log_format=settings.log_format)
-    logger.info("auth login started")
-    click.echo("GitHub PAT: fine-grained 'Repository security advisories: Read' is recommended.")
-    click.echo("Token must be set in .env as GITHUB_TOKEN - credentials file is no longer used.")
-    existing_env = settings.token
-    if existing_env:
-        click.echo(f"Note: GITHUB_TOKEN already set via env ({token_preview(existing_env)}).")
-        click.echo("If you want to rotate, edit .env directly: GITHUB_TOKEN=...")
+    logger.info("auth login started provider=%s method=%s email=%s", provider, method, email)
 
-    try:
-        token = getpass.getpass("Paste GitHub PAT (input hidden): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        click.echo("\nCancelled.", err=True)
-        sys.exit(1)
-    if not token:
-        click.echo("No token entered - abort.", err=True)
-        sys.exit(1)
+    # Determine provider interactively if not provided
+    if not provider:
+        provider = _prompt_provider()
+    provider = provider.lower()
 
-    async def _validate() -> dict:
-        s = get_settings()
-        cache = CacheStore(s.resolved_cache_path)
-        client = GitHubClient(s, token, cache=cache)
+    if provider == "github":
+        click.echo("GitHub PAT: fine-grained 'Repository security advisories: Read' is recommended.")
+        click.echo("Token must be set in .env as GITHUB_TOKEN - credentials file is no longer used.")
+        existing_env = settings.token
+        if existing_env:
+            click.echo(f"Note: GITHUB_TOKEN already set via env ({token_preview(existing_env)}).")
+            click.echo("If you want to rotate, edit .env directly: GITHUB_TOKEN=...")
         try:
-            user = await client.get_user()
-            return user
-        finally:
-            await client.close()
+            token = getpass.getpass("Paste GitHub PAT (input hidden): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            click.echo("\nCancelled.", err=True)
+            sys.exit(1)
+        if not token:
+            click.echo("No token entered - abort.", err=True)
+            sys.exit(1)
 
-    try:
-        user = asyncio.run(_validate())
-        login = user.get("login", "unknown")
-        click.echo(f"+ Validated as @{login}")
-    except AuthError as e:
-        click.echo(f"- Authentication failed: {_redact(str(e))}", err=True)
-        click.echo(
-            "Check token value, expiry, and scopes (repository_advisories:read).",
-            err=True,
-        )
-        sys.exit(1)
-    except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
-        click.echo(f"- Validation error: {_redact(str(e))}", err=True)
-        sys.exit(1)
+        async def _validate() -> dict:
+            s = get_settings()
+            cache = CacheStore(s.resolved_cache_path)
+            client = GitHubClient(s, token, cache=cache)
+            try:
+                user = await client.get_user()
+                return user
+            finally:
+                await client.close()
 
-    click.echo("")
-    click.echo("Token is VALID but NOT saved to disk by this command.")
-    click.echo("Set it in .env:")
-    click.echo("  echo 'GITHUB_TOKEN=YOUR_TOKEN_HERE' >> .env")
-    click.echo("  # or edit .env: GITHUB_TOKEN=github_pat_... / ghp_...")
-    click.echo("Then: app sync && app serve")
-    click.echo("Never commit .env (gitignored).")
+        try:
+            user = asyncio.run(_validate())
+            login = user.get("login", "unknown")
+            click.echo(f"+ Validated as @{login}")
+        except AuthError as e:
+            click.echo(f"- Authentication failed: {_redact(str(e))}", err=True)
+            click.echo(
+                "Check token value, expiry, and scopes (repository_advisories:read).",
+                err=True,
+            )
+            sys.exit(1)
+        except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
+            click.echo(f"- Validation error: {_redact(str(e))}", err=True)
+            sys.exit(1)
+
+        click.echo("")
+        click.echo("Token is VALID but NOT saved to disk by this command.")
+        if click.confirm("Token .env dosyasına yazılsın mı?", default=False):
+            _upsert_env_file("GITHUB_TOKEN", token)
+            click.echo("Wrote GITHUB_TOKEN to .env")
+        else:
+            click.echo("Set it in .env:")
+            click.echo("  echo 'GITHUB_TOKEN=YOUR_TOKEN_HERE' >> .env")
+        click.echo("Then: app sync && app serve")
+        click.echo("Never commit .env (gitignored).")
+        return
+
+    if provider == "proton":
+        # Proton Bridge: email + bridge password
+        if not email:
+            email = click.prompt("Proton e-posta adresi", type=str, default=settings.proton_bridge_email or "")
+            email = email.strip()
+        if not email or "@" not in email:
+            click.echo("Geçersiz e-posta", err=True)
+            sys.exit(1)
+        # Ask for bridge password (hidden)
+        try:
+            bridge_pw = getpass.getpass(f"Proton Bridge şifresi ({email}) (Bridge > Mailbox details, NOT account password): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            click.echo("\nCancelled.", err=True)
+            sys.exit(1)
+        if not bridge_pw:
+            click.echo("Şifre girilmedi - abort.", err=True)
+            sys.exit(1)
+        # Validate via IMAP
+        from advisory_rss.cert_tr.imap import connect_imap
+
+        acc = {
+            "email": email,
+            "password": bridge_pw,
+            "folder": settings.proton_imap_folder or "INBOX",
+            "host": settings.proton_bridge_host or "127.0.0.1",
+            "port": str(settings.proton_imap_port),
+            "security": settings.proton_imap_security or "STARTTLS",
+        }
+        try:
+            mail = connect_imap(acc)
+            try:
+                mail.select(acc["folder"], readonly=True)
+                # Try to list folders to verify
+                mail.list()
+            finally:
+                try:
+                    mail.logout()
+                except (OSError, ValueError, RuntimeError) as e:
+                    logger.debug("Proton logout failed: %s", e)
+            click.echo(f"+ Proton IMAP doğrulandı: {email} -> {acc['folder']} @ {acc['host']}:{acc['port']}")
+        except (OSError, ValueError, RuntimeError) as e:
+            click.echo(f"- Proton IMAP hatası: {_redact(str(e))}", err=True)
+            click.echo("Bridge çalışıyor mu? Host/port doğru mu? Şifre Bridge şifresi mi?", err=True)
+            sys.exit(1)
+
+        # Save to .env - handle multi
+        # If PROTON_BRIDGE_EMAILS already has multiple, append
+        existing_emails = settings.proton_bridge_emails
+        if existing_emails and email not in [e.strip() for e in existing_emails.split(",")]:
+            # Append to multi
+            new_emails = existing_emails.strip() + f",{email}"
+            _upsert_env_file("PROTON_BRIDGE_EMAILS", new_emails)
+            # Passwords
+            existing_pw = settings.proton_bridge_passwords or ""
+            if existing_pw.strip():
+                new_pw = existing_pw.strip() + f",{bridge_pw}"
+            else:
+                # If single was set, migrate to multi
+                single_pw = settings.proton_bridge_password or ""
+                if single_pw and single_pw.strip() != bridge_pw:
+                    new_pw = f"{single_pw.strip()},{bridge_pw}"
+                else:
+                    new_pw = bridge_pw
+            _upsert_env_file("PROTON_BRIDGE_PASSWORDS", new_pw)
+            click.echo(f"Wrote PROTON_BRIDGE_EMAILS and PROTON_BRIDGE_PASSWORDS to .env (appended {email})")
+        else:
+            _upsert_env_file("PROTON_BRIDGE_EMAIL", email)
+            _upsert_env_file("PROTON_BRIDGE_PASSWORD", bridge_pw)
+            click.echo("Wrote PROTON_BRIDGE_EMAIL and PROTON_BRIDGE_PASSWORD to .env")
+        click.echo("ENABLE_CERT_TR=true olduğundan emin olun, sonra: app sync --source cert-tr")
+        return
+
+    if provider == "gmail":
+        # Gmail: ask oauth vs app-password
+        gmail_method = method
+        if not gmail_method:
+            gmail_method = _prompt_gmail_method()
+        gmail_method = gmail_method.lower()
+        if gmail_method not in ("oauth", "app-password", "app"):
+            gmail_method = "oauth"
+        if gmail_method == "app":
+            gmail_method = "app-password"
+
+        if not email:
+            default_email = settings.gmail_email or (settings.gmail_emails.split(",")[0].strip() if settings.gmail_emails else "")
+            email = click.prompt("Gmail e-posta adresi", type=str, default=default_email)
+            email = email.strip()
+        if not email or "@" not in email:
+            click.echo("Geçersiz e-posta", err=True)
+            sys.exit(1)
+
+        if gmail_method == "app-password":
+            try:
+                app_pw = getpass.getpass(f"Gmail App Password ({email}) (16 haneli, Google Hesabı > Güvenlik > 2FA > Uygulama şifreleri): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                click.echo("\nCancelled.", err=True)
+                sys.exit(1)
+            if not app_pw:
+                click.echo("App Password girilmedi", err=True)
+                sys.exit(1)
+            # Validate via IMAP (Gmail SSL)
+            from advisory_rss.cert_tr.imap import connect_imap
+
+            acc = {
+                "email": email,
+                "password": app_pw,
+                "folder": settings.gmail_imap_folder or "INBOX",
+                "host": settings.gmail_imap_host or "imap.gmail.com",
+                "port": str(settings.gmail_imap_port),
+                "security": settings.gmail_imap_security or "SSL",
+            }
+            try:
+                mail = connect_imap(acc)
+                try:
+                    mail.select(acc["folder"], readonly=True)
+                finally:
+                    try:
+                        mail.logout()
+                    except (OSError, ValueError, RuntimeError) as e:
+                        logger.debug("Gmail logout failed: %s", e)
+                click.echo(f"+ Gmail IMAP (App Password) doğrulandı: {email}")
+            except (OSError, ValueError, RuntimeError) as e:
+                click.echo(f"- Gmail hatası: {_redact(str(e))}", err=True)
+                click.echo("App Password doğru mu? 2FA açık mı? IMAP enabled mi? (Gmail > Ayarlar > Yönlendirme ve POP/IMAP)", err=True)
+                sys.exit(1)
+
+            # Save to .env (handle multi)
+            existing_emails = settings.gmail_emails
+            if existing_emails and email not in [e.strip() for e in existing_emails.split(",")]:
+                new_emails = existing_emails.strip() + f",{email}"
+                _upsert_env_file("GMAIL_EMAILS", new_emails)
+                existing_pw = settings.gmail_app_passwords or ""
+                # App passwords may contain spaces, so we join with comma
+                if existing_pw.strip():
+                    new_pw = existing_pw.strip() + f",{app_pw}"
+                else:
+                    single_pw = settings.gmail_app_password or settings.gmail_password or ""
+                    if single_pw and single_pw.strip() != app_pw:
+                        new_pw = f"{single_pw.strip()},{app_pw}"
+                    else:
+                        new_pw = app_pw
+                _upsert_env_file("GMAIL_APP_PASSWORDS", new_pw)
+                click.echo(f"Wrote GMAIL_EMAILS and GMAIL_APP_PASSWORDS to .env (appended {email}, spaces preserved)")
+            else:
+                _upsert_env_file("GMAIL_EMAIL", email)
+                _upsert_env_file("GMAIL_APP_PASSWORD", app_pw)
+                click.echo("Wrote GMAIL_EMAIL and GMAIL_APP_PASSWORD to .env")
+            click.echo("ENABLE_CERT_TR=true olduğundan emin olun, sonra: app sync --source cert-tr")
+            return
+
+        # OAuth path
+        # Need client_id/secret
+        client_id = settings.gmail_oauth_client_id
+        client_secret = settings.gmail_oauth_client_secret
+        if not client_id or not client_secret:
+            click.echo("Gmail OAuth için Google Cloud OAuth Client ID/Secret gerekli.")
+            click.echo("Oluştur: https://console.cloud.google.com/ -> APIs & Services -> Credentials -> Create Credentials -> OAuth Client ID (Desktop)")
+            click.echo("Redirect URI: http://localhost (InstalledAppFlow otomatik)")
+            click.echo("Scopes: https://mail.google.com/")
+            if not client_id:
+                client_id = click.prompt("OAuth Client ID", type=str, default=client_id or "").strip()
+            if not client_secret:
+                try:
+                    client_secret = getpass.getpass("OAuth Client Secret (hidden): ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    click.echo("\nCancelled.", err=True)
+                    sys.exit(1)
+            if not client_id or not client_secret:
+                click.echo("Client ID/Secret gerekli", err=True)
+                sys.exit(1)
+            # Save to .env
+            _upsert_env_file("GMAIL_OAUTH_CLIENT_ID", client_id)
+            _upsert_env_file("GMAIL_OAUTH_CLIENT_SECRET", client_secret)
+            click.echo("Wrote GMAIL_OAUTH_CLIENT_ID/SECRET to .env")
+
+        # Run OAuth flow
+        click.echo(f"Tarayıcı açılacak, Gmail hesabı {email} ile onay verin...")
+        click.echo("Eğer tarayıcı açılmazsa, terminaldeki URL'yi manuel açın.")
+        try:
+            from advisory_rss.auth.gmail import run_gmail_oauth_flow, save_gmail_oauth_token
+        except ImportError as e:
+            click.echo(f"Gerekli paket eksik: {e}", err=True)
+            click.echo("Şunu çalıştır: pip install google-auth google-auth-oauthlib", err=True)
+            sys.exit(1)
+
+        try:
+            refresh_token, access_token, expiry = run_gmail_oauth_flow(client_id, client_secret, email)
+            click.echo(f"+ OAuth başarılı: refresh_token alındı ({refresh_token[:8]}...)")
+        except (OSError, ValueError, RuntimeError) as e:
+            click.echo(f"- OAuth hatası: {_redact(str(e))}", err=True)
+            sys.exit(1)
+
+        # Validate via XOAUTH2 IMAP
+        from advisory_rss.cert_tr.imap import connect_imap
+
+        acc = {
+            "email": email,
+            "password": "",
+            "folder": settings.gmail_imap_folder or "INBOX",
+            "host": settings.gmail_imap_host or "imap.gmail.com",
+            "port": str(settings.gmail_imap_port),
+            "security": settings.gmail_imap_security or "SSL",
+            "auth_method": "oauth",
+            "oauth_refresh_token": refresh_token,
+            "oauth_client_id": client_id,
+            "oauth_client_secret": client_secret,
+        }
+        try:
+            mail = connect_imap(acc)
+            try:
+                mail.select(acc["folder"], readonly=True)
+            finally:
+                try:
+                    mail.logout()
+                except (OSError, ValueError, RuntimeError) as e:
+                    logger.debug("Gmail OAuth logout failed: %s", e)
+            click.echo(f"+ Gmail IMAP (OAuth) doğrulandı: {email}")
+        except (OSError, ValueError, RuntimeError) as e:
+            click.echo(f"- Gmail OAuth hatası: {_redact(str(e))}", err=True)
+            sys.exit(1)
+
+        # Save refresh token
+        # Prefer file cache plus env
+        token_file = settings.gmail_oauth_token_file or "cache/gmail_oauth.json"
+        try:
+            save_gmail_oauth_token(token_file, email, refresh_token, client_id, client_secret, access_token, expiry)
+            click.echo(f"Wrote OAuth token to {token_file} (600 perms)")
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.debug("Failed to save to file: %s", e)
+
+        # Also save to .env for convenience (single or multi)
+        existing_emails = settings.gmail_emails
+        existing_rts = settings.gmail_oauth_refresh_tokens
+        if existing_emails and email not in [e.strip() for e in existing_emails.split(",")]:
+            new_emails = existing_emails.strip() + f",{email}"
+            _upsert_env_file("GMAIL_EMAILS", new_emails)
+            if existing_rts and existing_rts.strip():
+                new_rts = existing_rts.strip() + f",{refresh_token}"
+            else:
+                single_rt = settings.gmail_oauth_refresh_token or ""
+                if single_rt and single_rt.strip() != refresh_token:
+                    new_rts = f"{single_rt.strip()},{refresh_token}"
+                else:
+                    new_rts = refresh_token
+            _upsert_env_file("GMAIL_OAUTH_REFRESH_TOKENS", new_rts)
+            click.echo(f"Wrote GMAIL_EMAILS and GMAIL_OAUTH_REFRESH_TOKENS to .env (appended {email})")
+        elif existing_emails:
+            # Update existing entry
+            # Find index and replace
+            emails = [e.strip() for e in existing_emails.split(",")]
+            rts = [r.strip() for r in (existing_rts or "").split(",")] if existing_rts else []
+            # Pad rts
+            while len(rts) < len(emails):
+                rts.append("")
+            try:
+                idx = [e.lower() for e in emails].index(email.lower())
+                rts[idx] = refresh_token
+                _upsert_env_file("GMAIL_OAUTH_REFRESH_TOKENS", ",".join(rts))
+                click.echo("Updated GMAIL_OAUTH_REFRESH_TOKENS in .env")
+            except ValueError:
+                _upsert_env_file("GMAIL_OAUTH_REFRESH_TOKEN", refresh_token)
+                click.echo("Wrote GMAIL_OAUTH_REFRESH_TOKEN to .env")
+        else:
+            # Single
+            if settings.gmail_email and settings.gmail_email.strip().lower() != email.lower():
+                # Migrate single to multi
+                prev_email = settings.gmail_email.strip()
+                prev_rt = settings.gmail_oauth_refresh_token or ""
+                _upsert_env_file("GMAIL_EMAILS", f"{prev_email},{email}")
+                _upsert_env_file("GMAIL_OAUTH_REFRESH_TOKENS", f"{prev_rt},{refresh_token}")
+                click.echo("Migrated single Gmail to multi (GMAIL_EMAILS)")
+            else:
+                _upsert_env_file("GMAIL_EMAIL", email)
+                _upsert_env_file("GMAIL_OAUTH_REFRESH_TOKEN", refresh_token)
+                click.echo("Wrote GMAIL_EMAIL and GMAIL_OAUTH_REFRESH_TOKEN to .env")
+
+        click.echo("OAuth tamamlandı. ENABLE_CERT_TR=true olduğundan emin olun, sonra: app sync --source cert-tr")
+        click.echo("Not: Access token otomatik yenilenecek (refresh_token saklandı). İptal için Google Hesabı > Güvenlik > Üçüncü taraf erişimi'nden kaldırın.")
+        return
+
+    click.echo(f"Bilinmeyen provider: {provider}", err=True)
+    sys.exit(1)
 
 
 @auth.command("status")

@@ -8,6 +8,8 @@ import ssl
 import time
 from datetime import UTC, datetime, timedelta
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 # Allowed IMAP hosts: Proton Bridge loopback + Gmail
@@ -42,6 +44,10 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
     security = (account.get("security") or "STARTTLS").upper()
     email = account.get("email", "")
     password = account.get("password", "")
+    auth_method = account.get("auth_method", "password")
+    oauth_refresh_token = account.get("oauth_refresh_token", "")
+    oauth_client_id = account.get("oauth_client_id", "")
+    oauth_client_secret = account.get("oauth_client_secret", "")
 
     if host not in ALLOWED_HOSTS:
         raise ValueError(f"IMAP host must be one of {sorted(ALLOWED_HOSTS)}, got {host!r}")
@@ -58,13 +64,118 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
     else:  # NONE
         mail = imaplib.IMAP4(host, port)
 
-    try:
-        mail.login(email, password)
-    except imaplib.IMAP4.error as e:
-        logger.error("IMAP login failed for %s: %s", email, e)
-        raise
+    # Gmail OAuth (XOAUTH2) if configured
+    if auth_method == "oauth" and oauth_refresh_token:
+        # Need client_id/secret
+        if not oauth_client_id or not oauth_client_secret:
+            raise ValueError(f"Gmail OAuth for {email} missing client_id/secret")
+        try:
+            from advisory_rss.auth.gmail import build_xoauth2_string, fetch_access_token
+
+            access_token, _ = fetch_access_token(
+                oauth_refresh_token, oauth_client_id, oauth_client_secret
+            )
+            xoauth2 = build_xoauth2_string(email, access_token)
+
+            # imaplib authenticate with XOAUTH2
+            def _auth_cb(_: bytes) -> str:
+                return xoauth2
+
+            mail.authenticate("XOAUTH2", _auth_cb)  # type: ignore[arg-type]
+        except (OSError, ValueError, RuntimeError, imaplib.IMAP4.error, httpx.HTTPError, ImportError) as e:
+            logger.error("IMAP XOAUTH2 failed for %s: %s", email, e)
+            raise
+    else:
+        # Regular password login (Proton Bridge or Gmail App Password)
+        try:
+            mail.login(email, password)
+        except imaplib.IMAP4.error as e:
+            logger.error("IMAP login failed for %s: %s", email, e)
+            raise
     logger.debug("IMAP connected %s folder will be selected later", email)
     return mail
+
+
+def _encode_modified_utf7(s: str) -> str:
+    # IMAP modified UTF-7 (RFC 3501): encode non-ASCII runs as &<base64>- where base64 uses , for /
+    import base64
+
+    res: list[str] = []
+    in_non_ascii = False
+    buf: list[str] = []
+
+    def _b64(buf_chars: list[str]) -> str:
+        b = "".join(buf_chars).encode("utf-16be")
+        b64 = base64.b64encode(b).decode("ascii")
+        b64 = b64.replace("/", ",").rstrip("=")
+        return "&" + b64 + "-"
+
+    for ch in s:
+        o = ord(ch)
+        if 0x20 <= o <= 0x7E and ch != "&":
+            if in_non_ascii:
+                res.append(_b64(buf))
+                buf = []
+                in_non_ascii = False
+            res.append(ch)
+        elif ch == "&":
+            if in_non_ascii:
+                res.append(_b64(buf))
+                buf = []
+                in_non_ascii = False
+            res.append("&-")
+        else:
+            if not in_non_ascii:
+                in_non_ascii = True
+            buf.append(ch)
+    if in_non_ascii:
+        res.append(_b64(buf))
+    return "".join(res)
+
+
+def _select_folder_imap(mail: imaplib.IMAP4, folder: str, readonly: bool = True) -> tuple[str, list[bytes]]:
+    # Try UTF-8 first (if server supports UTF8=ACCEPT), then modified UTF-7
+    # Gmail supports both, but Proton Bridge is ASCII-only, so INBOX will succeed directly.
+    # For non-ASCII like "CVE Yazışmaları", try UTF-8, then fallback to modified UTF-7.
+    # Try with mail._encoding = 'utf-8'
+    orig_enc = getattr(mail, "_encoding", "ascii")
+    # First try: enable UTF8 if possible
+    try:
+        # Some servers require ENABLE UTF8=ACCEPT before UTF-8 mailbox names
+        # Ignore failure
+        try:
+            mail.enable("UTF8=ACCEPT")
+        except (imaplib.IMAP4.error, OSError, ValueError):
+            pass
+    except (AttributeError, OSError):
+        pass
+    # Try UTF-8
+    try:
+        mail._encoding = "utf-8"  # type: ignore[attr-defined]
+        return mail.select(folder, readonly=readonly)  # type: ignore[arg-type]
+    except UnicodeEncodeError:
+        pass
+    except imaplib.IMAP4.error:
+        # Pass to fallback
+        pass
+    # Fallback: modified UTF-7 (ASCII)
+    try:
+        encoded = _encode_modified_utf7(folder)
+        mail._encoding = "ascii"  # type: ignore[attr-defined]
+        return mail.select(encoded, readonly=readonly)  # type: ignore[arg-type]
+    except (UnicodeEncodeError, imaplib.IMAP4.error):
+        # Restore original encoding and re-raise
+        try:
+            mail._encoding = orig_enc  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            pass
+        raise
+    finally:
+        # Restore encoding to utf-8 for subsequent commands (search/fetch use ascii criteria)
+        try:
+            mail._encoding = "utf-8"  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            pass
 
 
 def _build_search_criteria(allowlist: list[str], search_days: int | None) -> list[str]:
@@ -101,19 +212,19 @@ def fetch_raw_emails(
         typ: str = ""
         data: list[bytes] = []
         try:
-            typ, data = mail.select(folder, readonly=True)  # type: ignore[assignment]
-        except imaplib.IMAP4.error as e:
+            typ, data = _select_folder_imap(mail, folder, readonly=True)
+        except (imaplib.IMAP4.error, UnicodeEncodeError, ValueError) as e:
             logger.warning("IMAP select folder %r failed for %s: %s", folder, email, e)
             if folder.upper() != "INBOX":
                 try:
-                    typ2, _data2 = mail.select("INBOX", readonly=True)  # type: ignore[assignment]
+                    typ2, _data2 = _select_folder_imap(mail, "INBOX", readonly=True)
                     if typ2 == "OK":
                         logger.info("Fallback to INBOX for %s", email)
                         folder = "INBOX"
                         typ, data = typ2, _data2  # type: ignore[assignment]
                     else:
                         return []
-                except (OSError, imaplib.IMAP4.error) as fallback_e:
+                except (OSError, imaplib.IMAP4.error, UnicodeEncodeError, ValueError) as fallback_e:
                     logger.debug("Fallback select failed for %s: %s", email, fallback_e)
                     return []
             else:
@@ -158,8 +269,8 @@ def fetch_raw_emails(
                 time.sleep(0.3)
                 try:
                     mail = connect_imap(account)
-                    mail.select(folder, readonly=True)
-                except (OSError, imaplib.IMAP4.error, ssl.SSLError, ValueError) as e:
+                    _select_folder_imap(mail, folder, readonly=True)
+                except (OSError, imaplib.IMAP4.error, ssl.SSLError, ValueError, UnicodeEncodeError) as e:
                     logger.warning("IMAP reconnect failed %s batch %d: %s", email, i, e)
                     break
 
