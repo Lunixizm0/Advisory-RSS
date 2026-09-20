@@ -63,9 +63,12 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
     # Title logic
     severity = _severity_label(adv.severity)
     is_withdrawn = bool(adv.withdrawn_at) or adv.state.lower() == "withdrawn"
+    src = getattr(adv, "source", "github") or "github"
     prefix = ""
     if is_withdrawn:
         prefix = "[WITHDRAWN] "
+    elif src == "cert-tr":
+        prefix = "[CERT-TR] "
     elif severity not in ("unknown", "n/a"):
         prefix = f"[{severity.upper()}] "
     base_title = adv.summary.strip() or adv.ghsa_id
@@ -73,7 +76,18 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
     title_esc = escape_text(title)
 
     raw_link = adv.html_url.strip() if adv.html_url else ""
-    link = raw_link if _is_safe_url(raw_link) else f"https://github.com/advisories/{adv.ghsa_id}"
+    if src == "cert-tr":
+        # fallback to NVD or siberguvenlik portal if not safe
+        fallback = (
+            f"https://nvd.nist.gov/vuln/detail/{adv.cve_id}"
+            if adv.cve_id
+            else "https://siberguvenlik.gov.tr"
+        )
+        link = raw_link if _is_safe_url(raw_link) else fallback
+    else:
+        link = (
+            raw_link if _is_safe_url(raw_link) else f"https://github.com/advisories/{adv.ghsa_id}"
+        )
     link_esc = escape_text(link)
 
     guid = escape_text(adv.ghsa_id)
@@ -85,6 +99,7 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
     author = escape_text(adv.author_login or "unknown")
     # categories
     cats: list[str] = []
+    cats.append(f"source:{src}")
     cats.append(f"severity:{severity}")
     if adv.package_ecosystem:
         cats.append(f"ecosystem:{adv.package_ecosystem}")
@@ -97,6 +112,15 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
     # also cve if present
     if adv.cve_id:
         cats.append(f"cve:{adv.cve_id}")
+    # extra cves for cert-tr
+    extra = getattr(adv, "extra_cves", []) or []
+    for ec in extra[:5]:
+        cats.append(f"cve:{ec}")
+    # CWE identifier if present
+    for ident in getattr(adv, "identifiers", []) or []:
+        if isinstance(ident, dict) and ident.get("type") == "CWE":
+            cats.append(f"cwe:{ident.get('value')}")
+            break
 
     cat_xml = "\n".join(f"      <category>{escape_text(c)}</category>" for c in cats)
 
@@ -239,7 +263,14 @@ def _build_content_html(adv: NormalizedAdvisory) -> str:
         parts.append("</ul>")
 
     view_link = adv.html_url if _is_safe_url(adv.html_url) else "#"
-    parts.append(f'<p><a href="{html.escape(view_link)}">View on GitHub</a></p>')
+    label = "View NVD entry" if getattr(adv, "source", "github") == "cert-tr" else "View on GitHub"
+    parts.append(f'<p><a href="{html.escape(view_link)}">{label}</a></p>')
+    # source footer
+    src = getattr(adv, "source", "github") or "github"
+    if src == "cert-tr":
+        parts.append(
+            "<p><em>Source:</em> CERT-TR / Siber Güvenlik Başkanlığı (via Proton Mail)</p>"
+        )
 
     html_str = "\n".join(parts)
     # Bound content size per item

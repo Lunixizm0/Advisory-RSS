@@ -1,4 +1,4 @@
-"""Persistent cache SQLite with WAL, parameterized queries, ETag map, stale fallback."""
+# Persistent cache SQLite with WAL, parameterized queries, ETag map, stale fallback
 
 from __future__ import annotations
 
@@ -14,9 +14,6 @@ from advisory_rss.cache.models import CacheMeta, NormalizedAdvisory
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-
-# Never log token - this store never touches token
-
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,7 +39,8 @@ CREATE TABLE IF NOT EXISTS advisories(
     updated_at TEXT,
     state TEXT,
     html_url TEXT,
-    author_login TEXT
+    author_login TEXT,
+    source TEXT DEFAULT 'github'
 );
 CREATE TABLE IF NOT EXISTS meta(
     key TEXT PRIMARY KEY,
@@ -66,9 +64,47 @@ class CacheStore:
         logger.debug("init schema db=%s", self.db_path)
         try:
             self._conn.executescript(SCHEMA)
+            # Lightweight migrations for existing DBs (idempotent)
+            try:
+                cols = {
+                    r[1] for r in self._conn.execute("PRAGMA table_info(advisories)").fetchall()
+                }
+                if "source" not in cols:
+                    self._conn.execute(
+                        "ALTER TABLE advisories ADD COLUMN source TEXT DEFAULT 'github'"
+                    )
+                    logger.info("Migrated advisories: added source column")
+                # Backfill normalized_json missing source field
+                try:
+                    cur = self._conn.execute("SELECT ghsa_id, normalized_json FROM advisories")
+                    for ghsa_id, nj in cur.fetchall():
+                        try:
+                            d = json.loads(nj)
+                            if "source" not in d:
+                                d["source"] = "github"
+                                new_nj = json.dumps(d, ensure_ascii=False)
+                                self._conn.execute(
+                                    "UPDATE advisories SET normalized_json=?, source=? WHERE ghsa_id=?",
+                                    (new_nj, "github", ghsa_id),
+                                )
+                        except (json.JSONDecodeError, ValueError, TypeError, sqlite3.Error) as ee:
+                            logger.debug("migration backfill skipped %s: %s", ghsa_id, ee)
+                except sqlite3.Error as ee:
+                    logger.debug("backfill query failed: %s", ee)
+                # Cleanup legacy false positives: non-CVE CERT-TR entries (hash-based IDs)
+                try:
+                    cur = self._conn.execute(
+                        "DELETE FROM advisories WHERE ghsa_id LIKE 'CERT-TR-MSG-%'"
+                    )
+                    if cur.rowcount and cur.rowcount > 0:
+                        logger.info("Cleaned up %d legacy CERT-TR non-CVE advisories", cur.rowcount)
+                except sqlite3.Error as ce:
+                    logger.debug("Cleanup legacy advisories failed: %s", ce)
+            except sqlite3.Error as me:
+                logger.warning("Migration check failed: %s", me)
             logger.debug("cache schema ready db=%s", self.db_path)
-        except sqlite3.Error as e:
-            logger.error("Cache schema init failed: %s", e, exc_info=True)
+        except sqlite3.Error:
+            logger.exception("Cache schema init failed")
 
     def upsert_advisories(self, advisories: list[NormalizedAdvisory]) -> int:
         """Upsert list; returns count. Uses parameterized queries."""
@@ -88,15 +124,16 @@ class CacheStore:
                         updated_iso = adv.updated_at.isoformat() if adv.updated_at else None
                         cur.execute(
                             """
-                            INSERT INTO advisories(ghsa_id, raw_json, normalized_json, updated_at, state, html_url, author_login)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO advisories(ghsa_id, raw_json, normalized_json, updated_at, state, html_url, author_login, source)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(ghsa_id) DO UPDATE SET
                                 raw_json=excluded.raw_json,
                                 normalized_json=excluded.normalized_json,
                                 updated_at=excluded.updated_at,
                                 state=excluded.state,
                                 html_url=excluded.html_url,
-                                author_login=excluded.author_login
+                                author_login=excluded.author_login,
+                                source=excluded.source
                             """,
                             (
                                 adv.ghsa_id,
@@ -106,6 +143,7 @@ class CacheStore:
                                 adv.state,
                                 adv.html_url,
                                 adv.author_login,
+                                getattr(adv, "source", "github") or "github",
                             ),
                         )
                         count += 1
@@ -113,8 +151,8 @@ class CacheStore:
                         logger.warning("Failed to upsert %s: %s", adv.ghsa_id, e)
                 cur.execute("COMMIT")
                 logger.info("upsert_advisories committed count=%d", count)
-            except sqlite3.Error as e:
-                logger.error("Cache upsert transaction failed: %s", e, exc_info=True)
+            except sqlite3.Error:
+                logger.exception("Cache upsert transaction failed")
                 try:
                     self._conn.execute("ROLLBACK")
                 except sqlite3.Error:
@@ -135,8 +173,8 @@ class CacheStore:
                         logger.warning("Corrupt cache row skipped: %s", e)
                 logger.debug("load_all fetched %d rows -> %d advisories", len(rows), len(out))
                 return out
-            except sqlite3.Error as e:
-                logger.error("Cache load failed: %s", e, exc_info=True)
+            except sqlite3.Error:
+                logger.exception("Cache load failed")
                 return []
 
     def load_sorted(self, limit: int | None = None) -> list[NormalizedAdvisory]:
@@ -171,8 +209,8 @@ class CacheStore:
                 self._conn.execute("DELETE FROM etags")
                 self._conn.execute("COMMIT")
                 logger.info("cache cleared")
-            except sqlite3.Error as e:
-                logger.error("Cache clear failed: %s", e, exc_info=True)
+            except sqlite3.Error:
+                logger.exception("Cache clear failed")
                 try:
                     self._conn.execute("ROLLBACK")
                 except sqlite3.Error:
@@ -258,8 +296,6 @@ class CacheStore:
         self.set_meta("rate_limited_until", None)
         if user:
             self.set_meta("authenticated_user", user)
-        # compute next
-        # caller sets next_scheduled via interval; but also set here roughly
         self.set_meta("advisories_count", str(self.count()))
         logger.info("cache mark_success user=%s time=%s", user or "unknown", now)
 

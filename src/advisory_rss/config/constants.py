@@ -30,5 +30,26 @@ RSS_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB guard
 GITHUB_API_VERSION = "2022-11-28"
 # Pinned to 2022-11-28 (stable). 2026-03-10 also valid but not required.
 
+# Cert-TR / Proton + Gmail
+DEFAULT_CERT_TR_ENABLED = False
+DEFAULT_PROTON_IMAP_HOST = "127.0.0.1"
+DEFAULT_PROTON_IMAP_PORT = 1143
+DEFAULT_PROTON_IMAP_SECURITY = "STARTTLS"
+DEFAULT_PROTON_FOLDER = "INBOX"
+DEFAULT_GMAIL_IMAP_HOST = "imap.gmail.com"
+DEFAULT_GMAIL_IMAP_PORT = 993
+DEFAULT_GMAIL_IMAP_SECURITY = "SSL"
+DEFAULT_GMAIL_FOLDER = "INBOX"
+DEFAULT_CERT_TR_SENDER_ALLOWLIST = "siberguvenlik.gov.tr"
+
+# Gmail OAuth
+GMAIL_OAUTH_SCOPES = ["https://mail.google.com/"]
+GMAIL_OAUTH_TOKEN_URI = "https://oauth2.googleapis.com/token"
+GMAIL_OAUTH_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
+DEFAULT_GMAIL_OAUTH_CACHE = "cache/gmail_oauth.json"
+
 # Security
 TOKEN_REDACT_PATTERN = r"(gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+)"
+
+# Proton bridge password redaction (append to generic pattern via separate check)
+PROTON_PASSWORD_HINT = "proton"

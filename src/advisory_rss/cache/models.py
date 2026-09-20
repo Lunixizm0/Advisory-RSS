@@ -1,5 +1,3 @@
-"""Normalized advisory dataclass and cache meta."""
-
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -32,6 +30,9 @@ class NormalizedAdvisory:
     publisher_login: str | None = None
     identifiers: list[dict[str, str]] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
+    # Multi-source extension
+    source: str = "github"
+    extra_cves: list[str] = field(default_factory=list)
 
     def sort_key(self) -> datetime:
         # Use updated_at > published_at > created_at > distant past
@@ -92,6 +93,8 @@ class NormalizedAdvisory:
             publisher_login=data.get("publisher_login"),
             identifiers=list(data.get("identifiers") or []),
             raw=data.get("raw") or {},
+            source=data.get("source") or "github",
+            extra_cves=list(data.get("extra_cves") or []),
         )
         return adv
 
