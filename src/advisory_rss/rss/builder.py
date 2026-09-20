@@ -258,6 +258,13 @@ def build_rss(
     ttl_minutes: int = 10,
     authenticated_user: str | None = None,
 ) -> str:
+    logger.debug(
+        "build_rss start advisories=%d max_items=%s ttl=%d user=%s",
+        len(advisories),
+        max_items,
+        ttl_minutes,
+        authenticated_user or "unknown",
+    )
     # Sort ensured by caller but re-sort
     sorted_adv = sorted(advisories, key=lambda a: a.sort_key(), reverse=True)
     if max_items is not None:
@@ -306,9 +313,10 @@ def build_rss(
     raw_bytes = xml.encode("utf-8")
     if len(raw_bytes) > RSS_MAX_BYTES:
         logger.warning(
-            "RSS exceeds %d bytes (%d) - truncating items",
+            "RSS exceeds %d bytes (%d) - truncating items items=%d",
             RSS_MAX_BYTES,
             len(raw_bytes),
+            len(sorted_adv),
         )
         # binary search for largest prefix that fits
         lo, hi = 0, len(sorted_adv)
@@ -336,4 +344,12 @@ def build_rss(
             else:
                 hi = mid - 1
         xml = best_xml
+        logger.info(
+            "RSS truncation applied original_items=%d truncated_bytes=%d",
+            len(sorted_adv),
+            len(best_xml.encode("utf-8")),
+        )
+    else:
+        logger.debug("RSS built items=%d bytes=%d", len(sorted_adv), len(raw_bytes))
+    logger.debug("build_rss done items=%d bytes=%d", len(sorted_adv), len(xml.encode("utf-8")))
     return xml

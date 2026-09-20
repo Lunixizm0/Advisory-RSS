@@ -13,6 +13,7 @@ from advisory_rss.config.constants import (
     DEFAULT_CACHE_PATH,
     DEFAULT_FILTER_MODE,
     DEFAULT_GITHUB_API_BASE,
+    DEFAULT_LOG_FORMAT,
     DEFAULT_LOG_LEVEL,
     DEFAULT_MAX_ITEMS,
     DEFAULT_MAX_PAGES_PER_REPO,
@@ -69,6 +70,8 @@ class Settings(BaseSettings):
         default=DEFAULT_FILTER_MODE, validation_alias="FILTER_MODE"
     )
     log_level: str = Field(default=DEFAULT_LOG_LEVEL, validation_alias="LOG_LEVEL")
+    log_format: str = Field(default=DEFAULT_LOG_FORMAT, validation_alias="LOG_FORMAT")
+    log_file: str | None = Field(default=None, validation_alias="LOG_FILE")
     cache_path: str = Field(default=DEFAULT_CACHE_PATH, validation_alias="CACHE_PATH")
 
     # Optional hardening
@@ -91,6 +94,8 @@ class Settings(BaseSettings):
     )
 
     def extra_repo_list(self) -> list[str]:
+        import logging
+
         raw = self.github_repos or self.extra_repos or ""
         if not raw.strip():
             return []
@@ -102,7 +107,7 @@ class Settings(BaseSettings):
             if "/" in p:
                 out.append(p)
             else:
-                logger = __import__("logging").getLogger(__name__)
+                logger = logging.getLogger(__name__)
                 logger.warning("Ignoring invalid repo %r (expected owner/repo)", p)
         return out
 
@@ -203,7 +208,38 @@ class Settings(BaseSettings):
     @field_validator("log_level")
     @classmethod
     def _validate_log(cls, v: str) -> str:
-        return v.upper()
+        lvl = v.upper().strip()
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if lvl not in allowed:
+            raise ValueError(f"LOG_LEVEL must be one of {allowed} (got {v!r})")
+        return lvl
+
+    @field_validator("log_format")
+    @classmethod
+    def _validate_log_format(cls, v: str) -> str:
+        fmt = v.lower().strip()
+        if fmt not in ("text", "json"):
+            raise ValueError(f"LOG_FORMAT must be 'text' or 'json' (got {v!r})")
+        return fmt
+
+    @field_validator("log_file")
+    @classmethod
+    def _validate_log_file(cls, v: str | None) -> str | None:
+        if v is None or not str(v).strip():
+            return None
+        p = Path(v)
+        try:
+            resolved = (Path.cwd() / p).resolve() if not p.is_absolute() else p.resolve()
+        except (OSError, ValueError, RuntimeError) as e:
+            raise ValueError(f"LOG_FILE {v!r} is not resolvable: {e}") from e
+        cwd = Path.cwd().resolve()
+        tmp = Path("/tmp").resolve()
+        allowed_prefixes = [cwd, tmp, cwd / "cache", cwd / "logs"]
+        if not any(resolved.is_relative_to(ap) for ap in allowed_prefixes):
+            raise ValueError(
+                f"LOG_FILE {v!r} must be under project directory, cache/, logs/ or /tmp (got {resolved})"
+            )
+        return str(v).strip()
 
     def effective_bind_address(self) -> str:
         if self.host and self.bind_address == DEFAULT_BIND_ADDRESS:

@@ -134,7 +134,7 @@ class GitHubClient:
         host = parsed.hostname or ""
         base_host = urlparse(self.base).hostname or ""
         if host and host not in _ALLOWED_HOSTS and host != base_host:
-            logger.warning("SSRF guard: refusing to fetch non-GitHub host %s", _redact(host))
+            logger.error("SSRF guard: refusing to fetch non-GitHub host %s", _redact(host))
             raise GitHubError(f"Refusing to fetch non-GitHub host {host}")
 
         req_headers: dict[str, str] = {}
@@ -160,9 +160,16 @@ class GitHubClient:
                     if etag:
                         hdrs["If-None-Match"] = etag
             except (ValueError, RuntimeError, httpx.HTTPError) as e:
-                logger.debug("etag key build failed: %s", _redact(str(e)))
+                logger.debug("etag key build failed url=%s: %s", _redact(url), _redact(str(e)))
                 etag_key = url
                 hdrs = dict(req_headers)
+            logger.debug(
+                "GitHub request attempt=%d/%d %s %s",
+                attempt + 1,
+                max_retries + 1,
+                method.upper(),
+                _redact(url),
+            )
 
             try:
                 resp = await self._client.request(method, url, params=params, headers=hdrs)
@@ -195,6 +202,7 @@ class GitHubClient:
 
             # 304 Not Modified - keep cache
             if resp.status_code == 304:
+                logger.debug("304 Not Modified for %s (ETag hit)", _redact(url))
                 # Update meta but return None to signal no new data
                 if self.cache is not None:
                     # Keep etag
@@ -222,8 +230,9 @@ class GitHubClient:
                 )
                 if attempt < max_retries:
                     logger.warning(
-                        "Rate limited (%d) - sleeping %.1fs (attempt %d/%d)",
+                        "Rate limited (%d) for %s - sleeping %.1fs (attempt %d/%d)",
                         resp.status_code,
+                        _redact(url),
                         sleep,
                         attempt + 1,
                         max_retries,
@@ -244,6 +253,7 @@ class GitHubClient:
 
             # Auth errors
             if resp.status_code == 401:
+                logger.error("401 Unauthorized for %s", _redact(url))
                 raise AuthError(
                     _redact(f"401 Unauthorized - invalid or expired token: {resp.text[:300]}")
                 )
@@ -258,6 +268,8 @@ class GitHubClient:
             if resp.status_code == 422:
                 logger.warning("422 Validation for %s: %s", _redact(url), _redact(resp.text[:500]))
                 return resp
+            if resp.status_code == 404:
+                logger.debug("404 for %s", _redact(url))
 
             if 500 <= resp.status_code < 600:
                 if attempt < max_retries:
@@ -520,6 +532,9 @@ class GitHubClient:
     async def sync_all(
         self, *, authenticated_login: str | None = None, filter_mode: str = "author"
     ) -> tuple[list[NormalizedAdvisory], dict[str, Any]]:
+        logger.info(
+            "sync_all start filter_mode=%s login=%s", filter_mode, authenticated_login or "auto"
+        )
         diag: dict[str, Any] = {
             "repos_scanned": 0,
             "orgs_scanned": 0,
@@ -645,10 +660,23 @@ class GitHubClient:
             await asyncio.sleep(0)
 
         diag["raw_count"] = len(aggregated_raw)
+        logger.info(
+            "sync_all fetched raw=%d orgs=%d repos=%d",
+            len(aggregated_raw),
+            diag.get("orgs_scanned"),
+            diag.get("repos_scanned"),
+        )
         # Normalize with error tolerance (one bad advisory doesn't kill sync)
         normalized = normalize_list(aggregated_raw)
         # Filter by author
         filtered = filter_advisories(normalized, authenticated_login, mode=filter_mode)
+        logger.info(
+            "sync_all normalized=%d filtered=%d mode=%s login=%s",
+            len(normalized),
+            len(filtered),
+            filter_mode,
+            authenticated_login,
+        )
         # Dedup by ghsa_id (keep most recent updated_at)
         seen: dict[str, NormalizedAdvisory] = {}
         for adv in filtered:
@@ -661,4 +689,14 @@ class GitHubClient:
         diag["normalized_count"] = len(normalized)
         diag["filtered_count"] = len(deduped)
         diag["authenticated_login"] = authenticated_login
+        logger.info(
+            "sync_all done filtered=%d deduped=%d errors=%d",
+            len(deduped),
+            len(deduped),
+            len(diag.get("errors", [])),
+            extra={"authenticated_login": authenticated_login},
+        )
+        if diag.get("errors"):
+            for e in diag["errors"][:5]:
+                logger.warning("sync_all error: %s", _redact(e))
         return deduped, diag

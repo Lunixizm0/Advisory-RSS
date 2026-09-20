@@ -33,6 +33,7 @@ if str(SRC) not in sys.path:
 from advisory_rss.cache.store import CacheStore
 from advisory_rss.config.settings import get_settings
 from advisory_rss.github.client import GitHubClient
+from advisory_rss.logging_config import setup_logging
 
 TOKEN_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+)")
 
@@ -48,6 +49,7 @@ def _safe_write_json(path: Path, data) -> None:
     # pretty, sorted keys for diff stability
     text = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
     path.write_text(text + "\n", encoding="utf-8")
+    logger.info("wrote %s (%d bytes)", path, len(text))
     print(f"wrote {path} ({len(text)} bytes)")
 
 
@@ -65,6 +67,7 @@ async def _fetch_one_ghsa(client: GitHubClient, ghsa: str, repo: str | None) -> 
                 try:
                     return resp.json()
                 except (ValueError, json.JSONDecodeError, RuntimeError) as e:
+                    logger.warning("repo GHSA %s json parse failed: %s", ghsa, _redact(str(e)))
                     print(f"  warn: repo GHSA {ghsa} json parse failed: {_redact(str(e))}")
             elif resp is not None and resp.status_code == 304:
                 # stale cache - try without etag
@@ -76,6 +79,7 @@ async def _fetch_one_ghsa(client: GitHubClient, ghsa: str, repo: str | None) -> 
                 if resp2 is not None and resp2.status_code == 200:
                     return resp2.json()
         except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
+            logger.warning("repo GHSA fetch failed %s @ %s: %s", ghsa, repo, _redact(str(e)))
             print(f"  warn: repo GHSA fetch failed {ghsa} @ {repo}: {_redact(str(e))}")
 
     # Try global (no ETag)
@@ -84,6 +88,7 @@ async def _fetch_one_ghsa(client: GitHubClient, ghsa: str, repo: str | None) -> 
         if resp is not None and resp.status_code == 200:
             return resp.json()
     except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
+        logger.warning("global GHSA fetch failed %s: %s", ghsa, _redact(str(e)))
         print(f"  warn: global GHSA fetch failed {ghsa}: {_redact(str(e))}")
 
     # Try GraphQL
@@ -105,14 +110,18 @@ async def _fetch_one_ghsa(client: GitHubClient, ghsa: str, repo: str | None) -> 
             if j.get("data", {}).get("securityAdvisory"):
                 return j["data"]["securityAdvisory"]
     except (httpx.HTTPError, OSError, ValueError, RuntimeError, json.JSONDecodeError) as e:
+        logger.warning("graphql GHSA fetch failed %s: %s", ghsa, _redact(str(e)))
         print(f"  warn: graphql GHSA fetch failed {ghsa}: {_redact(str(e))}")
     return None
 
 
 async def main_async(args: argparse.Namespace) -> int:
     settings = get_settings()
+    setup_logging(settings.log_level, log_file=settings.log_file, log_format=settings.log_format)
+    logger.info("fixtures_generator start args=%s", vars(args))
     token = settings.token
     if not token:
+        logger.error("GITHUB_TOKEN not set - abort")
         print(
             "ERROR: GITHUB_TOKEN / GITHUB_PAT not set in .env or env. Set it in .env:\n  GITHUB_TOKEN=github_pat_...  or ghp_...",
             file=sys.stderr,
@@ -133,6 +142,7 @@ async def main_async(args: argparse.Namespace) -> int:
             for p in fixtures_dir.glob(pat):
                 try:
                     p.unlink()
+                    logger.info("cleaned %s", p.relative_to(ROOT))
                     print(f"cleaned {p.relative_to(ROOT)}")
                 except OSError as e:
                     logger.debug("cleanup failed %s: %s", p, _redact(str(e)))
@@ -154,6 +164,12 @@ async def main_async(args: argparse.Namespace) -> int:
         extra = settings.extra_repo_list()
         orgs = settings.extra_org_list()
         if extra or orgs or settings.skip_full_scan:
+            logger.info(
+                "auto-detected GITHUB_REPOS=%s GITHUB_ORG=%s SKIP_FULL_SCAN=%s",
+                extra or "-",
+                orgs or "-",
+                settings.skip_full_scan,
+            )
             print(
                 f"Auto-detected from .env: GITHUB_REPOS={extra or '-'} GITHUB_ORG={orgs or '-'} SKIP_FULL_SCAN={settings.skip_full_scan}"
             )
@@ -169,6 +185,7 @@ async def main_async(args: argparse.Namespace) -> int:
         # 1) Resolve authenticated user
         user = await client.get_user()
         login = user.get("login", "unknown")
+        logger.info("authenticated as @%s (id=%s)", login, user.get("id"))
         print(f"Authenticated as @{login} (id={user.get('id')})")
         _safe_write_json(fixtures_dir / "real_user.json", user)
         manifest["authenticated_user"] = login
@@ -177,6 +194,7 @@ async def main_async(args: argparse.Namespace) -> int:
         if args.ghsa:
             ghsas = [g.strip() for g in args.ghsa.replace(",", " ").split() if g.strip()]
             for ghsa in ghsas:
+                logger.info("fetching GHSA %s repo=%s", ghsa, args.repo or "global")
                 print(f"Fetching GHSA {ghsa} (repo={args.repo or 'global'}) ...")
                 raw = await _fetch_one_ghsa(client, ghsa, args.repo)
                 if raw:
@@ -190,6 +208,7 @@ async def main_async(args: argparse.Namespace) -> int:
                         {"ghsa": ghsa, "file": rel, "repo": args.repo}
                     )
                 else:
+                    logger.warning("GHSA %s not found via REST/GraphQL", ghsa)
                     print(
                         f"  -> GHSA {ghsa} not found via REST/GraphQL (private, draft, or ID typo). List endpoint may still have it."
                     )
@@ -200,6 +219,11 @@ async def main_async(args: argparse.Namespace) -> int:
         # 3) Fetch repo advisories via sync_all (filtered) or direct list for extra repos
         if args.all or not args.ghsa:
             # Use existing sync logic to get filtered advisories (author == login)
+            logger.info(
+                "syncing advisories filter_mode=%s skip_full_scan=%s",
+                settings.filter_mode,
+                settings.skip_full_scan,
+            )
             print(
                 f"Syncing advisories (filter_mode={settings.filter_mode}, skip_full_scan={settings.skip_full_scan}) ..."
             )
@@ -212,6 +236,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 owner, name = args.repo.split("/", 1) if "/" in (args.repo or "") else (None, None)
                 if owner and name:
                     raws = await client.list_repo_advisories_for_repo(owner, name)
+                    logger.info("direct list for %s: %d raw", args.repo, len(raws))
                     print(f"  Direct list for {args.repo}: {len(raws)} raw advisories")
                     for i, raw in enumerate(raws[: args.limit]):
                         ghsa = raw.get("ghsa_id", f"unknown_{i}")
@@ -226,6 +251,12 @@ async def main_async(args: argparse.Namespace) -> int:
                 settings.github_repos = original_extra
             else:
                 advs, diag = await client.sync_all(filter_mode=settings.filter_mode)
+                logger.info(
+                    "sync_all result repos=%s raw=%s filtered=%s",
+                    diag.get("repos_scanned"),
+                    diag.get("raw_count"),
+                    diag.get("filtered_count"),
+                )
                 print(
                     f"  sync_all: repos_scanned={diag.get('repos_scanned')} raw={diag.get('raw_count')} filtered={diag.get('filtered_count')}"
                 )
@@ -249,14 +280,17 @@ async def main_async(args: argparse.Namespace) -> int:
         # 4) Also fetch a global advisory sample for reference (public)
         if args.fetch_global_sample:
             sample_ghsa = args.fetch_global_sample
+            logger.info("fetching global sample %s", sample_ghsa)
             print(f"Fetching global sample {sample_ghsa} ...")
             resp = await client._request_with_retry("GET", f"/advisories/{sample_ghsa}")
             if resp is not None and resp.status_code == 200:
                 _safe_write_json(fixtures_dir / f"real_global_{sample_ghsa}.json", resp.json())
             else:
+                logger.warning("global sample %s not found or not 200", sample_ghsa)
                 print(f"  global sample {sample_ghsa} not found or not 200")
 
         _safe_write_json(fixtures_dir / "manifest.json", manifest)
+        logger.info("done manifest=%s", fixtures_dir / "manifest.json")
         print(f"\nDone. Manifest: {fixtures_dir / 'manifest.json'}")
         # Always clean tmp cache afterwards unless --no-clean (keeps fixtures dir tidy; .tmp-cache.db is not a fixture)
         if not args.no_clean and tmp_cache.exists() and args.cache is None:
@@ -264,6 +298,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 tmp_cache.unlink()
                 for p in fixtures_dir.glob(".tmp-cache.*"):
                     p.unlink(missing_ok=True)
+                logger.info("cleaned %s", tmp_cache.relative_to(ROOT))
                 print(f"cleaned {tmp_cache.relative_to(ROOT)}")
             except OSError as e:
                 logger.debug("tmp cache cleanup failed: %s", _redact(str(e)))
@@ -273,6 +308,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 p.unlink(missing_ok=True)
         return 0
     except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
+        logger.error("fixtures_generator failed: %s", _redact(str(e)), exc_info=True)
         print(f"ERROR: {_redact(str(e))}", file=sys.stderr)
         import traceback
 

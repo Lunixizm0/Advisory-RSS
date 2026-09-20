@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from advisory_rss.cache.models import NormalizedAdvisory
+
+logger = logging.getLogger(__name__)
 
 
 def matches_filter(
@@ -53,5 +57,21 @@ def filter_advisories(
     mode: str = "author",
 ) -> list[NormalizedAdvisory]:
     if not authenticated_login:
+        logger.warning("filter_advisories called without authenticated_login - returning empty")
         return []
-    return [a for a in advisories if matches_filter(a, authenticated_login, mode)]
+    filtered = [a for a in advisories if matches_filter(a, authenticated_login, mode)]
+    logger.debug(
+        "filter_advisories login=%s mode=%s total=%d kept=%d",
+        authenticated_login,
+        mode,
+        len(advisories),
+        len(filtered),
+    )
+    if not filtered and advisories:
+        logger.info(
+            "filter_advisories produced empty result total=%d login=%s mode=%s",
+            len(advisories),
+            authenticated_login,
+            mode,
+        )
+    return filtered

@@ -3,7 +3,11 @@ DEFAULT_PORT = 8765
 DEFAULT_REFRESH_INTERVAL = 600  # seconds (10 minutes)
 DEFAULT_MAX_ITEMS = 1000
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOG_FORMAT = "text"  # text | json
 DEFAULT_CACHE_PATH = "cache/advisories.db"
+DEFAULT_LOG_FILE = ""  # empty => stderr only; set to e.g. cache/serve.log for file
+LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB per file before rotation
+LOG_BACKUP_COUNT = 3
 DEFAULT_GITHUB_API_BASE = "https://api.github.com"
 DEFAULT_FILTER_MODE = "author"
 

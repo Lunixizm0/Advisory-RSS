@@ -18,6 +18,7 @@ from advisory_rss.cache.store import CacheStore
 from advisory_rss.config.constants import TOKEN_REDACT_PATTERN
 from advisory_rss.config.settings import get_settings
 from advisory_rss.github.client import AuthError, GitHubClient, RateLimitError
+from advisory_rss.logging_config import setup_logging as _setup_logging
 
 TOKEN_RE = _re.compile(TOKEN_REDACT_PATTERN)
 
@@ -28,47 +29,24 @@ def _redact(s: str) -> str:
     return TOKEN_RE.sub("***", s)
 
 
-def configure_logging(level: str) -> None:
-    lvl = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=lvl,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%SZ",
-    )
-
-    # Ensure token never appears via custom filter - also redact exc_info
-    class RedactFilter(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            if isinstance(record.msg, str):
-                record.msg = _redact(record.msg)
-            if record.args:
-                try:
-                    new_args = []
-                    for a in record.args:
-                        if isinstance(a, str):
-                            new_args.append(_redact(a))
-                        else:
-                            new_args.append(a)
-                    record.args = tuple(new_args)
-                except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-                    logging.getLogger(__name__).debug("RedactFilter args handling failed: %s", e)
-            # Redact exception info if present (exc_info may contain token in traceback args)
-            if record.exc_info and record.exc_info[1] is not None:
-                try:
-                    # Cannot mutate exc directly safely - redact exc_text if already formatted
-                    pass
-                except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-                    logging.getLogger(__name__).debug("RedactFilter exc_info handling failed: %s", e)
-            if record.exc_text and isinstance(record.exc_text, str):
-                record.exc_text = _redact(record.exc_text)
-            return True
-
-    # Avoid duplicate filters on repeated configure_logging calls
-    for h in logging.getLogger().handlers:
-        # Check if our filter already present
-        if any(isinstance(f, RedactFilter) for f in h.filters):
-            continue
-        h.addFilter(RedactFilter())
+def configure_logging(
+    level: str,
+    *,
+    log_file: str | None = None,
+    log_format: str = "text",
+    force: bool = False,
+    use_stderr: bool = True,
+) -> None:
+    """Backwards-compat wrapper around centralized logging_config.setup_logging."""
+    try:
+        settings = get_settings()
+        # Prefer explicit args, else settings
+        lf = log_file if log_file is not None else getattr(settings, "log_file", None)
+        fmt = log_format if log_format != "text" else getattr(settings, "log_format", "text")
+    except Exception:
+        lf = log_file
+        fmt = log_format
+    _setup_logging(level, log_file=lf, log_format=fmt, force=force, use_stderr=use_stderr)
 
 
 @click.group()
@@ -85,7 +63,8 @@ def auth() -> None:
 @auth.command("login")
 def auth_login() -> None:
     settings = get_settings()
-    configure_logging(settings.log_level)
+    _setup_logging(settings.log_level, log_file=settings.log_file, log_format=settings.log_format)
+    logger.info("auth login started")
     click.echo("GitHub PAT: fine-grained 'Repository security advisories: Read' is recommended.")
     click.echo("Token must be set in .env as GITHUB_TOKEN - credentials file is no longer used.")
     existing_env = settings.token
@@ -144,7 +123,14 @@ def auth_status() -> None:
 @cli.command()
 def sync() -> None:
     settings = get_settings()
-    configure_logging(settings.log_level)
+    _setup_logging(settings.log_level, log_file=settings.log_file, log_format=settings.log_format)
+    logger.info(
+        "sync started",
+        extra={
+            "filter_mode": settings.filter_mode,
+            "cache_path": str(settings.resolved_cache_path),
+        },
+    )
     token = load_token(settings)
     if not token:
         click.echo("No token set. Set GITHUB_TOKEN in .env or run `app auth login`.", err=True)
@@ -160,6 +146,15 @@ def sync() -> None:
             cache.mark_success(user=diag.get("authenticated_login"))
             nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
             cache.set_meta("next_scheduled_sync", nxt)
+            logger.info(
+                "sync ok: upserted=%d filtered=%s raw=%s repos=%s orgs=%s",
+                count,
+                diag.get("filtered_count"),
+                diag.get("raw_count"),
+                diag.get("repos_scanned"),
+                diag.get("orgs_scanned"),
+                extra={"diag": diag},
+            )
             click.echo(
                 f"Sync OK - {count} advisories upserted (filtered {diag.get('filtered_count')} from {diag.get('raw_count')} raw, {diag.get('repos_scanned')} repos, {diag.get('orgs_scanned')} orgs)"
             )
@@ -167,20 +162,32 @@ def sync() -> None:
                 click.echo(f"Warnings ({len(diag['errors'])}):", err=True)
                 for e in diag["errors"][:5]:
                     click.echo(f"  - {_redact(e)}", err=True)
+                for e in diag["errors"]:
+                    logger.warning("sync warning: %s", _redact(e))
             if advs:
                 click.echo(f"Latest: {advs[0].ghsa_id} - {advs[0].summary[:80]}")
+                logger.debug("latest advisory: %s - %s", advs[0].ghsa_id, advs[0].summary[:80])
             else:
                 click.echo(
                     "No advisories matched filter - cache remains empty. Check FILTER_MODE or author login."
                 )
+                logger.warning(
+                    "sync produced no advisories (filter=%s login=%s)",
+                    settings.filter_mode,
+                    diag.get("authenticated_login"),
+                )
             return count
         except AuthError as e:
-            click.echo(f"Auth error (401): {_redact(str(e))}", err=True)
-            cache.mark_error(_redact(str(e)))
+            msg = _redact(str(e))
+            logger.error("sync auth error: %s", msg, exc_info=True)
+            click.echo(f"Auth error (401): {msg}", err=True)
+            cache.mark_error(msg)
             sys.exit(1)
         except RateLimitError as e:
+            msg = _redact(str(e))
+            logger.warning("sync rate limited retry_after=%s: %s", e.retry_after, msg)
             click.echo(
-                f"Rate limited - retry after {e.retry_after}: {_redact(str(e))}",
+                f"Rate limited - retry after {e.retry_after}: {msg}",
                 err=True,
             )
             if e.retry_after:
@@ -188,11 +195,13 @@ def sync() -> None:
                     "rate_limited_until",
                     (datetime.now(UTC) + timedelta(seconds=e.retry_after)).isoformat(),
                 )
-            cache.mark_error(_redact(str(e)))
+            cache.mark_error(msg)
             sys.exit(1)
         except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
-            click.echo(f"Sync failed: {_redact(str(e))}", err=True)
-            cache.mark_error(_redact(str(e)))
+            msg = _redact(str(e))
+            logger.error("sync failed: %s", msg, exc_info=True)
+            click.echo(f"Sync failed: {msg}", err=True)
+            cache.mark_error(msg)
             sys.exit(1)
         finally:
             await client.close()
@@ -240,7 +249,7 @@ def _daemonize(pid_file: str | None = None, log_file: str | None = None) -> None
     try:
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a", buffering=1, encoding="utf-8") as lf:
-            # Also keep fd open via file object — avoid GC closing
+            # Also keep fd open via file object - avoid GC closing
             _os.dup2(lf.fileno(), sys.stdout.fileno())
             _os.dup2(lf.fileno(), sys.stderr.fileno())
             # stdin -> /dev/null
@@ -270,7 +279,7 @@ def _daemonize(pid_file: str | None = None, log_file: str | None = None) -> None
     "--daemon",
     "-d",
     is_flag=True,
-    help="Run in background — survives terminal close (daemonize, setsid, pid/log in cache/)",
+    help="Run in background - survives terminal close (daemonize, setsid, pid/log in cache/)",
 )
 @click.option(
     "--pid-file", default="cache/advisory-rss.pid", show_default=True, help="PID file when --daemon"
@@ -287,7 +296,18 @@ def serve(
     log_file: str = "cache/serve.log",
 ) -> None:
     settings = get_settings()
-    configure_logging(settings.log_level)
+    # Use CLI log_file if --daemon else settings LOG_FILE if set; otherwise daemon default
+    effective_log_file = log_file if daemon else (settings.log_file or None)
+    # Pre-daemon file: only use settings file if not daemon; daemon path will re-setup after fork
+    pre_log_file = None if daemon else effective_log_file
+    _setup_logging(settings.log_level, log_file=pre_log_file, log_format=settings.log_format)
+    logger.info(
+        "serve init daemon=%s log_file=%s log_format=%s",
+        daemon,
+        effective_log_file,
+        settings.log_format,
+        extra={"bind": settings.effective_bind_address(), "port": settings.port},
+    )
     # Validate bind address
     from advisory_rss.server.bind import assert_loopback
 
@@ -308,18 +328,42 @@ def serve(
             "Warning: GITHUB_TOKEN not set - RSS will serve stale cache only; run `app sync` after setting token.",
             err=True,
         )
+        logger.warning("serve without token - RSS will serve stale cache only")
     else:
         click.echo(f"GitHub authentication: set ({token_preview(token)})")
         authenticated_user = cache.get_meta("authenticated_user")
         if authenticated_user:
             click.echo(f"Authenticated user: @{authenticated_user}")
+        logger.info(
+            "serve token set preview=%s user=%s",
+            token_preview(token),
+            cache.get_meta("authenticated_user") or "unknown",
+        )
 
+    logger.info(
+        "serve config bind=%s:%s cache=%s filter=%s refresh=%ds max_items=%s log_level=%s log_format=%s",
+        bind,
+        port,
+        settings.resolved_cache_path,
+        settings.filter_mode,
+        settings.refresh_interval,
+        settings.max_items,
+        settings.log_level,
+        settings.log_format,
+    )
     # Verify listening socket note
     click.echo(
         f"Verify binding:  ss -tlnp | grep {port}   (expect {bind}:{port}, never 0.0.0.0:{port})"
     )
     click.echo(
         f"Filter mode: {settings.filter_mode}  Refresh: {settings.refresh_interval}s  Max items: {settings.max_items}"
+    )
+    logger.debug(
+        "serve details url=%s health=http://%s:%s/health count=%s",
+        settings.rss_url(),
+        bind,
+        port,
+        cache.count(),
     )
 
     if daemon:
@@ -354,34 +398,49 @@ def serve(
         )
         _daemonize(pid_file, log_file)
         # Child continues; stdout/stderr now goes to log file
+        # Reconfigure logging to use rotating file after daemon fork (use only file handler to avoid duplicate writes to same file)
+        try:
+            _setup_logging(
+                settings.log_level,
+                log_file=log_file,
+                log_format=settings.log_format,
+                force=True,
+                use_stderr=False,
+            )
+            logger.info("daemon child logging reconfigured file=%s", log_file)
+        except Exception as e:
+            print(f"daemon logging reconfigure failed: {e}", file=sys.stderr)
 
     # Import uvicorn late
+    from contextlib import asynccontextmanager
+
     import uvicorn
 
     from advisory_rss.server.app import background_refresh_loop, create_app
 
-    app = create_app(settings=settings, cache=cache)
-
-    @app.on_event("startup")
-    async def _startup() -> None:
-        # Mark next sync time
+    @asynccontextmanager
+    async def lifespan(app):  # type: ignore[no-untyped-def]
+        # startup
         nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
         if not cache.get_meta("next_scheduled_sync"):
             cache.set_meta("next_scheduled_sync", nxt)
-        # Fire background task
         app.state.bg_task = asyncio.create_task(background_refresh_loop(settings, cache))
         bg_logger = logging.getLogger("advisory_rss")
         bg_logger.info("Background refresh scheduled every %ds", settings.refresh_interval)
+        try:
+            yield
+        finally:
+            # shutdown
+            task = getattr(app.state, "bg_task", None)
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            logger.info("server shutdown")
 
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        task = getattr(app.state, "bg_task", None)
-        if task:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+    app = create_app(settings=settings, cache=cache, lifespan=lifespan)
 
     config = uvicorn.Config(
         app,
@@ -390,6 +449,7 @@ def serve(
         log_level=settings.log_level.lower(),
         access_log=True,
         loop="auto",
+        log_config=None,  # use our setup_logging, not uvicorn's default
     )
     server = uvicorn.Server(config)
     try:
@@ -405,9 +465,12 @@ def serve(
     "--pid-file", default="cache/advisory-rss.pid", show_default=True, help="PID file of daemon"
 )
 def stop(pid_file: str = "cache/advisory-rss.pid") -> None:
+    settings = get_settings()
+    _setup_logging(settings.log_level, log_file=settings.log_file, log_format=settings.log_format)
+    logger.info("stop called pid_file=%s", pid_file)
     pf = Path(pid_file)
     if not pf.exists():
-        click.echo(f"No pid file {pf} — not running ?", err=True)
+        click.echo(f"No pid file {pf} - not running ?", err=True)
         sys.exit(1)
     try:
         pid = int(pf.read_text(encoding="utf-8").strip())
@@ -435,7 +498,7 @@ def stop(pid_file: str = "cache/advisory-rss.pid") -> None:
             logger.debug("pid cleanup failed: %s", _redact(str(e)))
         click.echo("Stopped and cleaned pid file.")
     except ProcessLookupError:
-        click.echo(f"Process {pid} not found — cleaning stale pid file {pf}")
+        click.echo(f"Process {pid} not found - cleaning stale pid file {pf}")
         try:
             pf.unlink(missing_ok=True)
         except OSError as e:
@@ -452,6 +515,12 @@ def status() -> None:
 
 def _status() -> None:
     settings = get_settings()
+    _setup_logging(settings.log_level, log_file=settings.log_file, log_format=settings.log_format)
+    logger.debug(
+        "status called bind=%s port=%s",
+        settings.effective_bind_address(),
+        settings.port,
+    )
     cache = CacheStore(settings.resolved_cache_path)
     token = load_token(settings)
     meta = cache.get_cache_meta()

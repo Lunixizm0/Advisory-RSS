@@ -97,7 +97,7 @@ SKIP_FULL_SCAN=true   # optional: skip scanning all owned repos, only scan GITHU
 LOG_LEVEL=INFO app sync
 ```
 
-`FILTER_MODE` semantics, `.env.example:22`):
+`FILTER_MODE` semantics, `.env.example:22`:
 
 - `author` **(default)** - only `advisory.author.login == your_login` (precise "created by me")
 - `author_or_publisher` - also matches `publisher.login`
@@ -154,7 +154,7 @@ Restart `app serve` to apply. The feed `Cache-Control: private, max-age=300, mus
 Normal `app serve` dies when the terminal closes (SIGHUP). If you want it to keep running in the background:
 
 ```bash
-# easiest — daemonize (double-fork + setsid, like nohup but with pid/log management)
+# easiest - daemonize (double-fork + setsid, like nohup but with pid/log management)
 app serve --daemon
 # → pid: cache/advisory-rss.pid , log: cache/serve.log
 # verification

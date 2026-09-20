@@ -7,6 +7,7 @@ import hmac
 import logging
 import re as _re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -39,10 +40,21 @@ class LimitedSizeMiddleware(BaseHTTPMiddleware):
             if length is not None:
                 if length.isdigit():
                     if int(length) > MAX_POST_BYTES:
+                        logger.warning(
+                            "POST %s rejected: Content-Length %s exceeds %d",
+                            request.url.path,
+                            length,
+                            MAX_POST_BYTES,
+                        )
                         return JSONResponse(
                             status_code=413, content={"detail": "Payload too large"}
                         )
                 else:
+                    logger.warning(
+                        "POST %s rejected: invalid Content-Length %r",
+                        request.url.path,
+                        _redact(str(length)[:200]),
+                    )
                     return JSONResponse(
                         status_code=400, content={"detail": "Invalid Content-Length"}
                     )
@@ -55,11 +67,16 @@ async def _read_limited_body(request: Request, limit: int = MAX_POST_BYTES) -> b
     async for chunk in request.stream():
         body += chunk
         if len(body) > limit:
+            logger.warning("POST %s body exceeds %d bytes - rejecting", request.url.path, limit)
             raise HTTPException(status_code=413, detail="Payload too large")
     return body
 
 
-def create_app(settings: Settings | None = None, cache: CacheStore | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    cache: CacheStore | None = None,
+    lifespan: Any | None = None,
+) -> FastAPI:
     if settings is None:
         settings = get_settings()
     if cache is None:
@@ -68,6 +85,12 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
     from advisory_rss.server.bind import assert_loopback
 
     assert_loopback(settings.effective_bind_address())
+    logger.info(
+        "create_app bind=%s:%s cache=%s",
+        settings.effective_bind_address(),
+        settings.port,
+        settings.resolved_cache_path,
+    )
 
     app = FastAPI(
         title="Advisory RSS",
@@ -75,6 +98,7 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(LimitedSizeMiddleware)
@@ -110,7 +134,16 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
     @app.get("/rss")
     async def rss(request: Request) -> Response:
         if request.query_params:
-            logger.debug("RSS query params ignored: %s", _redact(str(request.query_params)))
+            logger.debug(
+                "RSS query params ignored: %s path=%s",
+                _redact(str(request.query_params)),
+                request.url.path,
+            )
+        logger.debug(
+            "RSS request path=%s user_agent=%s",
+            request.url.path,
+            _redact(request.headers.get("user-agent", "")[:200]),
+        )
         # Serve from cache only - never call GitHub here
         advisories = cache.load_sorted(limit=None)  # load all sorted, builder caps by max_items
         feed_user = cache.get_meta("authenticated_user") or "user"
@@ -146,7 +179,9 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
 
     @app.post("/refresh")
     async def refresh(request: Request) -> JSONResponse:
+        logger.info("POST /refresh from %s", request.client.host if request.client else "unknown")
         if not settings.enable_refresh_endpoint:
+            logger.warning("POST /refresh rejected - endpoint disabled")
             raise HTTPException(status_code=404, detail="Not found")
         # Require token when endpoint is enabled - deny unauthenticated refresh if no token configured
         if not settings.refresh_token:
@@ -168,6 +203,10 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
             else:
                 provided = auth.strip()
         if not hmac.compare_digest(provided, settings.refresh_token or ""):
+            logger.warning(
+                "POST /refresh invalid token from %s",
+                request.client.host if request.client else "unknown",
+            )
             raise HTTPException(status_code=403, detail="Invalid refresh token")
         # Enforce streaming body size even for chunked (defense in depth)
         await _read_limited_body(request, MAX_POST_BYTES)
@@ -185,6 +224,12 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
                 # next sync
                 nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
                 cache.set_meta("next_scheduled_sync", nxt)
+                logger.info(
+                    "POST /refresh ok: count=%d login=%s",
+                    count,
+                    diag.get("authenticated_login"),
+                    extra={"diag": diag},
+                )
                 return JSONResponse(
                     content={
                         "status": "refreshed",
@@ -196,18 +241,18 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
                 await client.close()
         except (OSError, ValueError, RuntimeError) as e:
             msg = _redact(str(e))
-            logger.warning("Refresh failed: %s", msg)
+            logger.warning("Refresh failed: %s", msg, exc_info=True)
             cache.mark_error(msg)
             raise HTTPException(status_code=502, detail=f"Refresh failed: {msg[:200]}") from e
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception):
-        # Never leak stack trace; log redacted
+        # Never leak stack trace; log redacted with trace for operators (RedactFilter safe)
         logger.error(
             "Unhandled error on %s: %s",
             request.url.path,
             _redact(str(exc)),
-            exc_info=False,
+            exc_info=True,
         )
         return JSONResponse(
             status_code=500,
@@ -220,6 +265,11 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
 
 async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None:
     # Run an immediate refresh on startup (after short grace) then periodic
+    logger.info(
+        "background_refresh_loop starting interval=%ds filter=%s",
+        settings.refresh_interval,
+        settings.filter_mode,
+    )
     first = True
     while True:
         if not first:
@@ -240,12 +290,17 @@ async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None
                 cache.mark_success(user=diag.get("authenticated_login"))
                 nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
                 cache.set_meta("next_scheduled_sync", nxt)
-                logger.info("Background refresh OK: %d advisories", len(advs))
+                logger.info(
+                    "Background refresh OK: %d advisories login=%s",
+                    len(advs),
+                    diag.get("authenticated_login"),
+                    extra={"diag": diag},
+                )
             finally:
                 await client.close()
         except (OSError, ValueError, RuntimeError) as e:
             msg = _redact(str(e))
-            logger.warning("Background refresh failed, keeping stale cache: %s", msg)
+            logger.warning("Background refresh failed, keeping stale cache: %s", msg, exc_info=True)
             cache.mark_error(msg)
             # schedule next retry sooner (backoff handled elsewhere)
             nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()

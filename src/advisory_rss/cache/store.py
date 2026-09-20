@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 
-# Never log token — this store never touches token
+# Never log token - this store never touches token
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -63,15 +63,19 @@ class CacheStore:
         self._init_schema()
 
     def _init_schema(self) -> None:
+        logger.debug("init schema db=%s", self.db_path)
         try:
             self._conn.executescript(SCHEMA)
+            logger.debug("cache schema ready db=%s", self.db_path)
         except sqlite3.Error as e:
-            logger.warning("Cache schema init failed: %s", e)
+            logger.error("Cache schema init failed: %s", e, exc_info=True)
 
     def upsert_advisories(self, advisories: list[NormalizedAdvisory]) -> int:
         """Upsert list; returns count. Uses parameterized queries."""
         if not advisories:
+            logger.debug("upsert_advisories empty - no-op")
             return 0
+        logger.info("upsert_advisories start count=%d", len(advisories))
         count = 0
         with _lock:
             try:
@@ -108,8 +112,9 @@ class CacheStore:
                     except (sqlite3.Error, ValueError, TypeError, OSError) as e:
                         logger.warning("Failed to upsert %s: %s", adv.ghsa_id, e)
                 cur.execute("COMMIT")
+                logger.info("upsert_advisories committed count=%d", count)
             except sqlite3.Error as e:
-                logger.warning("Cache upsert transaction failed: %s", e)
+                logger.error("Cache upsert transaction failed: %s", e, exc_info=True)
                 try:
                     self._conn.execute("ROLLBACK")
                 except sqlite3.Error:
@@ -128,9 +133,10 @@ class CacheStore:
                         out.append(NormalizedAdvisory.from_dict(data))
                     except (json.JSONDecodeError, ValueError, TypeError) as e:
                         logger.warning("Corrupt cache row skipped: %s", e)
+                logger.debug("load_all fetched %d rows -> %d advisories", len(rows), len(out))
                 return out
             except sqlite3.Error as e:
-                logger.warning("Cache load failed: %s", e)
+                logger.error("Cache load failed: %s", e, exc_info=True)
                 return []
 
     def load_sorted(self, limit: int | None = None) -> list[NormalizedAdvisory]:
@@ -138,6 +144,12 @@ class CacheStore:
         all_adv = self.load_all()
         # sort updated_at DESC
         all_adv.sort(key=lambda a: a.sort_key(), reverse=True)
+        logger.debug(
+            "load_sorted total=%d limit=%s -> %d",
+            len(all_adv),
+            limit,
+            len(all_adv[:limit] if limit is not None else all_adv),
+        )
         if limit is not None:
             return all_adv[:limit]
         return all_adv
@@ -151,14 +163,16 @@ class CacheStore:
                 return 0
 
     def clear(self) -> None:
+        logger.info("cache clear initiated")
         with _lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 self._conn.execute("DELETE FROM advisories")
                 self._conn.execute("DELETE FROM etags")
                 self._conn.execute("COMMIT")
+                logger.info("cache cleared")
             except sqlite3.Error as e:
-                logger.warning("Cache clear failed: %s", e)
+                logger.error("Cache clear failed: %s", e, exc_info=True)
                 try:
                     self._conn.execute("ROLLBACK")
                 except sqlite3.Error:
@@ -219,12 +233,14 @@ class CacheStore:
             try:
                 if etag is None:
                     self._conn.execute("DELETE FROM etags WHERE url=?", (url,))
+                    logger.debug("etag deleted url=%s", url[:120])
                 else:
                     now = datetime.now(UTC).isoformat()
                     self._conn.execute(
                         "INSERT INTO etags(url, etag, updated_at) VALUES (?, ?, ?) ON CONFLICT(url) DO UPDATE SET etag=excluded.etag, updated_at=excluded.updated_at",
                         (url, etag, now),
                     )
+                    logger.debug("etag set url=%s etag=%s", url[:120], etag[:80])
             except sqlite3.Error as e:
                 logger.warning("set_etag failed: %s", e)
 
@@ -245,7 +261,9 @@ class CacheStore:
         # compute next
         # caller sets next_scheduled via interval; but also set here roughly
         self.set_meta("advisories_count", str(self.count()))
+        logger.info("cache mark_success user=%s time=%s", user or "unknown", now)
 
     def mark_error(self, err: str) -> None:
         # truncate error
         self.set_meta("last_error", err[:500])
+        logger.warning("cache mark_error: %s", err[:200])

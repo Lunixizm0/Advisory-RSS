@@ -145,11 +145,15 @@ def normalize_advisory(raw: dict[str, Any]) -> NormalizedAdvisory | None:
 
         # repository_advisory_url for global
         repo_adv_url = raw.get("repository_advisory_url")
-        if isinstance(repo_adv_url, str) and repo_adv_url.strip() and (not html_url or "advisories" not in html_url):
-                # Keep html_url as primary but add repo_advisory_url as reference if not already present
-                clean = repo_adv_url.strip()
-                if clean not in references:
-                    references.append(clean)
+        if (
+            isinstance(repo_adv_url, str)
+            and repo_adv_url.strip()
+            and (not html_url or "advisories" not in html_url)
+        ):
+            # Keep html_url as primary but add repo_advisory_url as reference if not already present
+            clean = repo_adv_url.strip()
+            if clean not in references:
+                references.append(clean)
 
         author_login = None
         author = raw.get("author")
@@ -200,15 +204,24 @@ def normalize_advisory(raw: dict[str, Any]) -> NormalizedAdvisory | None:
 
 
 def normalize_list(raw_list: list[dict[str, Any]]) -> list[NormalizedAdvisory]:
+    logger.debug("normalize_list input=%d", len(raw_list))
     out: list[NormalizedAdvisory] = []
+    skipped = 0
     for raw in raw_list:
         try:
             if not isinstance(raw, dict):
+                skipped += 1
                 continue
             adv = normalize_advisory(raw)
             if adv:
                 out.append(adv)
+            else:
+                skipped += 1
         except (ValueError, TypeError, AttributeError, KeyError, RuntimeError) as e:
             logger.warning("Skipping malformed advisory: %s", e)
+            skipped += 1
             continue
+    logger.info(
+        "normalize_list done input=%d normalized=%d skipped=%d", len(raw_list), len(out), skipped
+    )
     return out
