@@ -6,9 +6,8 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from advisory_rss.cache.models import CacheMeta, NormalizedAdvisory
 
@@ -21,7 +20,9 @@ _lock = threading.Lock()
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=30.0, check_same_thread=False, isolation_level=None)
+    conn = sqlite3.connect(
+        str(db_path), timeout=30.0, check_same_thread=False, isolation_level=None
+    )
     # Safety pragmas
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -104,7 +105,7 @@ class CacheStore:
                             ),
                         )
                         count += 1
-                    except Exception as e:
+                    except (sqlite3.Error, ValueError, TypeError, OSError) as e:
                         logger.warning("Failed to upsert %s: %s", adv.ghsa_id, e)
                 cur.execute("COMMIT")
             except sqlite3.Error as e:
@@ -125,7 +126,7 @@ class CacheStore:
                     try:
                         data = json.loads(j)
                         out.append(NormalizedAdvisory.from_dict(data))
-                    except Exception as e:
+                    except (json.JSONDecodeError, ValueError, TypeError) as e:
                         logger.warning("Corrupt cache row skipped: %s", e)
                 return out
             except sqlite3.Error as e:
@@ -219,7 +220,7 @@ class CacheStore:
                 if etag is None:
                     self._conn.execute("DELETE FROM etags WHERE url=?", (url,))
                 else:
-                    now = datetime.now(timezone.utc).isoformat()
+                    now = datetime.now(UTC).isoformat()
                     self._conn.execute(
                         "INSERT INTO etags(url, etag, updated_at) VALUES (?, ?, ?) ON CONFLICT(url) DO UPDATE SET etag=excluded.etag, updated_at=excluded.updated_at",
                         (url, etag, now),
@@ -235,7 +236,7 @@ class CacheStore:
 
     # Helpers for status
     def mark_success(self, user: str | None = None) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self.set_meta("last_successful_sync", now)
         self.set_meta("last_error", None)
         self.set_meta("rate_limited_until", None)

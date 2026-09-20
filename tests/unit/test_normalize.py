@@ -1,8 +1,11 @@
 import copy
 import json
+import logging
 from pathlib import Path
 
 from advisory_rss.github.normalize import normalize_advisory, normalize_list
+
+logger = logging.getLogger(__name__)
 
 
 def load_fixture(name):
@@ -55,8 +58,8 @@ def load_real():
             # Prefer most recently modified
             globs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             return json.loads(globs[0].read_text())
-    except Exception:
-        pass
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as e:
+        logger.debug("load_real fallback to synthetic: %s", e)
     # No real fixture found (common for open-source contributors) -> synthetic
     return _synthetic_fixture()
 
@@ -72,7 +75,9 @@ def test_normalize_full():
     assert adv.severity == (raw.get("severity") or "medium").lower()
     assert adv.summary == raw.get("summary")
     # author is per-user - compare to fixture, not hardcoded Lunixizm0
-    expected_author = (raw.get("author") or {}).get("login") if isinstance(raw.get("author"), dict) else None
+    expected_author = (
+        (raw.get("author") or {}).get("login") if isinstance(raw.get("author"), dict) else None
+    )
     assert adv.author_login == expected_author
     assert adv.state == raw.get("state")
     # html_url should contain GHSA id and be a github URL
@@ -81,7 +86,11 @@ def test_normalize_full():
     # package extraction is tolerant - compare to fixture if present
     vulns = raw.get("vulnerabilities") or []
     if vulns and isinstance(vulns[0], dict):
-        expected_pkg = vulns[0].get("package", {}).get("name") if isinstance(vulns[0].get("package"), dict) else None
+        expected_pkg = (
+            vulns[0].get("package", {}).get("name")
+            if isinstance(vulns[0].get("package"), dict)
+            else None
+        )
         expected_range = vulns[0].get("vulnerable_version_range")
         if expected_pkg:
             assert adv.package_name == expected_pkg

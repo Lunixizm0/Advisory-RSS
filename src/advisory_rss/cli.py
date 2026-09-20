@@ -4,11 +4,13 @@ import asyncio
 import getpass
 import logging
 import os
+import re as _re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import click
+import httpx
 
 from advisory_rss import __version__
 from advisory_rss.auth.pat import load_token, token_preview
@@ -17,9 +19,9 @@ from advisory_rss.config.constants import TOKEN_REDACT_PATTERN
 from advisory_rss.config.settings import get_settings
 from advisory_rss.github.client import AuthError, GitHubClient, RateLimitError
 
-import re as _re
-
 TOKEN_RE = _re.compile(TOKEN_REDACT_PATTERN)
+
+logger = logging.getLogger(__name__)
 
 
 def _redact(s: str) -> str:
@@ -48,15 +50,15 @@ def configure_logging(level: str) -> None:
                         else:
                             new_args.append(a)
                     record.args = tuple(new_args)
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+                    logging.getLogger(__name__).debug("RedactFilter args handling failed: %s", e)
             # Redact exception info if present (exc_info may contain token in traceback args)
             if record.exc_info and record.exc_info[1] is not None:
                 try:
                     # Cannot mutate exc directly safely - redact exc_text if already formatted
                     pass
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+                    logging.getLogger(__name__).debug("RedactFilter exc_info handling failed: %s", e)
             if record.exc_text and isinstance(record.exc_text, str):
                 record.exc_text = _redact(record.exc_text)
             return True
@@ -84,9 +86,7 @@ def auth() -> None:
 def auth_login() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
-    click.echo(
-        "GitHub PAT: fine-grained 'Repository security advisories: Read' is recommended."
-    )
+    click.echo("GitHub PAT: fine-grained 'Repository security advisories: Read' is recommended.")
     click.echo("Token must be set in .env as GITHUB_TOKEN - credentials file is no longer used.")
     existing_env = settings.token
     if existing_env:
@@ -123,7 +123,7 @@ def auth_login() -> None:
             err=True,
         )
         sys.exit(1)
-    except Exception as e:  
+    except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
         click.echo(f"- Validation error: {_redact(str(e))}", err=True)
         sys.exit(1)
 
@@ -190,7 +190,7 @@ def sync() -> None:
                 )
             cache.mark_error(_redact(str(e)))
             sys.exit(1)
-        except Exception as e:  
+        except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
             click.echo(f"Sync failed: {_redact(str(e))}", err=True)
             cache.mark_error(_redact(str(e)))
             sys.exit(1)
@@ -207,15 +207,15 @@ def _daemonize(pid_file: str | None = None, log_file: str | None = None) -> None
     try:
         sys.stdout.flush()
         sys.stderr.flush()
-    except Exception:  
-        pass
+    except OSError as e:
+        logger.debug("flush failed: %s", _redact(str(e)))
 
     # First fork
     try:
         pid = _os.fork()
         if pid > 0:
             # Parent exits
-            _os._exit(0)  
+            _os._exit(0)
     except OSError as e:
         click.echo(f"Daemon fork failed: {e}", err=True)
         sys.exit(1)
@@ -223,14 +223,14 @@ def _daemonize(pid_file: str | None = None, log_file: str | None = None) -> None
     # Decouple from parent env
     try:
         _os.setsid()
-    except Exception:  
-        pass
+    except OSError as e:
+        logger.debug("setsid failed: %s", _redact(str(e)))
 
     # Second fork
     try:
         pid = _os.fork()
         if pid > 0:
-            _os._exit(0)  
+            _os._exit(0)
     except OSError as e:
         click.echo(f"Daemon second fork failed: {e}", err=True)
         sys.exit(1)
@@ -239,36 +239,53 @@ def _daemonize(pid_file: str | None = None, log_file: str | None = None) -> None
     log_path = log_file or "cache/serve.log"
     try:
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-        lf = open(log_path, "a", buffering=1, encoding="utf-8") 
-        # Also keep fd open via file object — avoid GC closing
-        _os.dup2(lf.fileno(), sys.stdout.fileno())
-        _os.dup2(lf.fileno(), sys.stderr.fileno())
-        # stdin -> /dev/null
-        with open(os.devnull, "r", encoding="utf-8") as dn:
-            _os.dup2(dn.fileno(), sys.stdin.fileno())
-    except Exception:  
+        with open(log_path, "a", buffering=1, encoding="utf-8") as lf:
+            # Also keep fd open via file object — avoid GC closing
+            _os.dup2(lf.fileno(), sys.stdout.fileno())
+            _os.dup2(lf.fileno(), sys.stderr.fileno())
+            # stdin -> /dev/null
+            with open(os.devnull, "r", encoding="utf-8") as dn:
+                _os.dup2(dn.fileno(), sys.stdin.fileno())
+    except OSError as e:
+        logger.debug("daemon log redirect failed: %s", _redact(str(e)))
         # Fallback to /dev/null
         try:
             with open(os.devnull, "w", encoding="utf-8") as dn:
                 _os.dup2(dn.fileno(), sys.stdout.fileno())
                 _os.dup2(dn.fileno(), sys.stderr.fileno())
-        except Exception:  
-            pass
+        except OSError as e2:
+            logger.debug("fallback dup2 failed: %s", _redact(str(e2)))
 
     # Write pid file
     if pid_file:
         try:
             Path(pid_file).parent.mkdir(parents=True, exist_ok=True)
             Path(pid_file).write_text(str(_os.getpid()), encoding="utf-8")
-        except Exception as e:  
+        except (OSError, ValueError, RuntimeError) as e:
             click.echo(f"Warning: could not write pid file {pid_file}: {e}", err=True)
 
 
 @cli.command()
-@click.option("--daemon", "-d", is_flag=True, help="Run in background — survives terminal close (daemonize, setsid, pid/log in cache/)")
-@click.option("--pid-file", default="cache/advisory-rss.pid", show_default=True, help="PID file when --daemon")
-@click.option("--log-file", default="cache/serve.log", show_default=True, help="Log file when --daemon (stdout/stderr)")
-def serve(daemon: bool = False, pid_file: str = "cache/advisory-rss.pid", log_file: str = "cache/serve.log") -> None:  
+@click.option(
+    "--daemon",
+    "-d",
+    is_flag=True,
+    help="Run in background — survives terminal close (daemonize, setsid, pid/log in cache/)",
+)
+@click.option(
+    "--pid-file", default="cache/advisory-rss.pid", show_default=True, help="PID file when --daemon"
+)
+@click.option(
+    "--log-file",
+    default="cache/serve.log",
+    show_default=True,
+    help="Log file when --daemon (stdout/stderr)",
+)
+def serve(
+    daemon: bool = False,
+    pid_file: str = "cache/advisory-rss.pid",
+    log_file: str = "cache/serve.log",
+) -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
     # Validate bind address
@@ -314,44 +331,50 @@ def serve(daemon: bool = False, pid_file: str = "cache/advisory-rss.pid", log_fi
                 os.kill(pid, 0)
                 # Verify cmdline contains advisory-rss to detect PID reuse
                 try:
-                    cmdline = Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8", errors="ignore")
+                    cmdline = Path(f"/proc/{pid}/cmdline").read_text(
+                        encoding="utf-8", errors="ignore"
+                    )
                     if "advisory" not in cmdline.lower() and "uvicorn" not in cmdline.lower():
                         raise ProcessLookupError  # treat as stale
                 except FileNotFoundError:
                     raise ProcessLookupError
                 except (OSError, ValueError):
                     pass  # if /proc not available, fall back to kill(0) check
-                click.echo(f"Already running (pid {pid} from {pf}), abort. Use `app stop` first.", err=True)
+                click.echo(
+                    f"Already running (pid {pid} from {pf}), abort. Use `app stop` first.", err=True
+                )
                 sys.exit(1)
             except (OSError, ValueError, ProcessLookupError):
                 try:
                     pf.unlink(missing_ok=True)
-                except Exception:
-                    pass
-        click.echo(f"Daemonizing → pid: {pid_file}, log: {log_file} (terminal kapanınca da yaşar, nohup/setsid)")
+                except OSError as e:
+                    logger.debug("stale pid cleanup failed: %s", _redact(str(e)))
+        click.echo(
+            f"Daemonizing → pid: {pid_file}, log: {log_file} (terminal kapanınca da yaşar, nohup/setsid)"
+        )
         _daemonize(pid_file, log_file)
         # Child continues; stdout/stderr now goes to log file
 
     # Import uvicorn late
-    import uvicorn  
+    import uvicorn
 
     from advisory_rss.server.app import background_refresh_loop, create_app
 
     app = create_app(settings=settings, cache=cache)
 
     @app.on_event("startup")
-    async def _startup() -> None:  
+    async def _startup() -> None:
         # Mark next sync time
         nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
         if not cache.get_meta("next_scheduled_sync"):
             cache.set_meta("next_scheduled_sync", nxt)
         # Fire background task
         app.state.bg_task = asyncio.create_task(background_refresh_loop(settings, cache))
-        logger = logging.getLogger("advisory_rss")
-        logger.info("Background refresh scheduled every %ds", settings.refresh_interval)
+        bg_logger = logging.getLogger("advisory_rss")
+        bg_logger.info("Background refresh scheduled every %ds", settings.refresh_interval)
 
     @app.on_event("shutdown")
-    async def _shutdown() -> None:  
+    async def _shutdown() -> None:
         task = getattr(app.state, "bg_task", None)
         if task:
             task.cancel()
@@ -378,7 +401,9 @@ def serve(daemon: bool = False, pid_file: str = "cache/advisory-rss.pid", log_fi
 
 
 @cli.command()
-@click.option("--pid-file", default="cache/advisory-rss.pid", show_default=True, help="PID file of daemon")
+@click.option(
+    "--pid-file", default="cache/advisory-rss.pid", show_default=True, help="PID file of daemon"
+)
 def stop(pid_file: str = "cache/advisory-rss.pid") -> None:
     pf = Path(pid_file)
     if not pf.exists():
@@ -386,7 +411,7 @@ def stop(pid_file: str = "cache/advisory-rss.pid") -> None:
         sys.exit(1)
     try:
         pid = int(pf.read_text(encoding="utf-8").strip())
-    except Exception as e:  
+    except (OSError, ValueError) as e:
         click.echo(f"Bad pid file {pf}: {e}", err=True)
         sys.exit(1)
     try:
@@ -406,15 +431,15 @@ def stop(pid_file: str = "cache/advisory-rss.pid") -> None:
             sys.exit(1)
         try:
             pf.unlink(missing_ok=True)
-        except Exception:  
-            pass
+        except OSError as e:
+            logger.debug("pid cleanup failed: %s", _redact(str(e)))
         click.echo("Stopped and cleaned pid file.")
     except ProcessLookupError:
         click.echo(f"Process {pid} not found — cleaning stale pid file {pf}")
         try:
             pf.unlink(missing_ok=True)
-        except Exception:  
-            pass
+        except OSError as e:
+            logger.debug("stale pid cleanup failed: %s", _redact(str(e)))
     except PermissionError as e:
         click.echo(f"Permission denied killing {pid}: {e}", err=True)
         sys.exit(1)

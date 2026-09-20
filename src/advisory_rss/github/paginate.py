@@ -26,7 +26,7 @@ def extract_cursor(url: str, cursor_name: str = "after") -> str | None:
         if vals:
             return vals[0]
         return None
-    except Exception:
+    except (ValueError, AttributeError, TypeError):
         return None
 
 

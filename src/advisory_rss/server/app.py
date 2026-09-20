@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import re as _re
 from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -18,8 +19,6 @@ from advisory_rss.config.settings import Settings, get_settings
 from advisory_rss.github.client import GitHubClient
 from advisory_rss.rss.builder import build_rss
 from advisory_rss.server.headers import SecurityHeadersMiddleware
-
-import re as _re
 
 logger = logging.getLogger(__name__)
 TOKEN_RE = _re.compile(TOKEN_REDACT_PATTERN)
@@ -171,7 +170,7 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
         if not hmac.compare_digest(provided, settings.refresh_token or ""):
             raise HTTPException(status_code=403, detail="Invalid refresh token")
         # Enforce streaming body size even for chunked (defense in depth)
-        body = await _read_limited_body(request, MAX_POST_BYTES)
+        await _read_limited_body(request, MAX_POST_BYTES)
         # Trigger sync background
         token = load_token(settings)
         if not token:
@@ -195,11 +194,11 @@ def create_app(settings: Settings | None = None, cache: CacheStore | None = None
                 )
             finally:
                 await client.close()
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError) as e:
             msg = _redact(str(e))
             logger.warning("Refresh failed: %s", msg)
             cache.mark_error(msg)
-            raise HTTPException(status_code=502, detail=f"Refresh failed: {msg[:200]}")
+            raise HTTPException(status_code=502, detail=f"Refresh failed: {msg[:200]}") from e
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception):
@@ -244,7 +243,7 @@ async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None
                 logger.info("Background refresh OK: %d advisories", len(advs))
             finally:
                 await client.close()
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError) as e:
             msg = _redact(str(e))
             logger.warning("Background refresh failed, keeping stale cache: %s", msg)
             cache.mark_error(msg)

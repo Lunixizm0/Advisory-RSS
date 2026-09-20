@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -39,9 +39,9 @@ class NormalizedAdvisory:
             if dt is not None:
                 # ensure tz aware
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
+                    dt = dt.replace(tzinfo=UTC)
                 return dt
-        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return datetime(1970, 1, 1, tzinfo=UTC)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -53,7 +53,7 @@ class NormalizedAdvisory:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "NormalizedAdvisory":
+    def from_dict(cls, data: dict[str, Any]) -> NormalizedAdvisory:
         def _parse(v: str | None) -> datetime | None:
             if not v:
                 return None
@@ -63,9 +63,9 @@ class NormalizedAdvisory:
                     v = v[:-1] + "+00:00"
                 dt = datetime.fromisoformat(v)
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
+                    dt = dt.replace(tzinfo=UTC)
                 return dt
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 return None
 
         adv = cls(

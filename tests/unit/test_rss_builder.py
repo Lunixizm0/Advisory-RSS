@@ -55,8 +55,9 @@ def test_rss_valid_xml_and_required_elements():
     items = channel.findall("item")
     assert len(items) == 2
     for item in items:
-        assert item.find("guid") is not None
-        assert item.find("guid").attrib["isPermaLink"] == "false"
+        guid = item.find("guid")
+        assert guid is not None
+        assert guid.attrib["isPermaLink"] == "false"
         assert item.find("title") is not None
         assert item.find("link") is not None
         assert item.find("description") is not None
@@ -76,7 +77,13 @@ def test_rss_sorted_by_updated_desc():
         authenticated_user="u",
     )
     root = ET.fromstring(xml.encode("utf-8"))
-    guids = [i.find("guid").text for i in root.find("channel").findall("item")]
+    channel = root.find("channel")
+    assert channel is not None
+    guids: list[str | None] = []
+    for it in channel.findall("item"):
+        g = it.find("guid")
+        assert g is not None
+        guids.append(g.text)
     assert guids[0] == "GHSA-new"
     assert guids[1] == "GHSA-old"
 
@@ -135,9 +142,14 @@ def test_rss_withdrawn_present():
         authenticated_user="u",
     )
     root = ET.fromstring(xml.encode("utf-8"))
-    item = root.find("channel").find("item")
-    title = item.find("title").text
-    assert "[WITHDRAWN]" in title
+    channel = root.find("channel")
+    assert channel is not None
+    item = channel.find("item")
+    assert item is not None
+    title_elem = item.find("title")
+    assert title_elem is not None
+    title = title_elem.text
+    assert title is not None and "[WITHDRAWN]" in title
     cats = [c.text for c in item.findall("category")]
     assert "withdrawn" in cats
 
@@ -151,8 +163,10 @@ def test_rss_empty_list_valid():
         authenticated_user="u",
     )
     root = ET.fromstring(xml.encode("utf-8"))
-    assert len(root.find("channel").findall("item")) == 0
-    assert root.find("channel").find("ttl") is not None
+    channel = root.find("channel")
+    assert channel is not None
+    assert len(channel.findall("item")) == 0
+    assert channel.find("ttl") is not None
 
 
 def test_rss_pubdate_rfc822():
@@ -201,7 +215,13 @@ def test_rss_link_points_to_github_not_internal():
         authenticated_user="u",
     )
     root = ET.fromstring(xml.encode("utf-8"))
-    link = root.find("channel").find("item").find("link").text
+    channel = root.find("channel")
+    assert channel is not None
+    item = channel.find("item")
+    assert item is not None
+    link_elem = item.find("link")
+    assert link_elem is not None
+    link = link_elem.text
     assert link is not None and link.startswith("https://github.com/")
     assert "127.0.0.1" not in link
 
@@ -217,4 +237,6 @@ def test_rss_max_items_truncates():
         authenticated_user="u",
     )
     root = ET.fromstring(xml.encode("utf-8"))
-    assert len(root.find("channel").findall("item")) == 2
+    channel = root.find("channel")
+    assert channel is not None
+    assert len(channel.findall("item")) == 2

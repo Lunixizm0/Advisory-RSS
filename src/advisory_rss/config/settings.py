@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
@@ -31,6 +31,20 @@ class Settings(BaseSettings):
         case_sensitive=False,
         populate_by_name=True,
     )
+
+    def __init__(
+        self,
+        _env_file: str | Path | tuple[str | Path, ...] | list[str | Path] | None = None,
+        _env_file_encoding: str | None = None,
+        _secrets_dir: str | Path | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            _env_file=_env_file,
+            _env_file_encoding=_env_file_encoding,
+            _secrets_dir=_secrets_dir,
+            **kwargs,
+        )
 
     # GitHub
     github_token: str | None = Field(default=None, validation_alias="GITHUB_TOKEN")
@@ -149,7 +163,9 @@ class Settings(BaseSettings):
             )
         # http is only allowed for GHES testing - warn if used with api.github.com
         if parsed.scheme == "http" and parsed.hostname == "api.github.com":
-            raise ValueError("GITHUB_API_BASE for api.github.com must be https:// (http downgrade not allowed)")
+            raise ValueError(
+                "GITHUB_API_BASE for api.github.com must be https:// (http downgrade not allowed)"
+            )
         host = parsed.hostname
         if not host:
             raise ValueError("GITHUB_API_BASE must contain a hostname")
@@ -159,11 +175,7 @@ class Settings(BaseSettings):
         except ValueError:
             ip = None  # hostname, not IP - not subject to private range check
         if ip is not None and (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
+            ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved
         ):
             raise ValueError(f"GITHUB_API_BASE host {host!r} is private/loopback - not allowed")
         if parsed.username or parsed.password:
@@ -176,8 +188,8 @@ class Settings(BaseSettings):
         p = Path(v)
         try:
             resolved = (Path.cwd() / p).resolve() if not p.is_absolute() else p.resolve()
-        except Exception:
-            raise ValueError(f"CACHE_PATH {v!r} is not resolvable")
+        except (OSError, ValueError, RuntimeError) as e:
+            raise ValueError(f"CACHE_PATH {v!r} is not resolvable: {e}") from e
         cwd = Path.cwd().resolve()
         tmp = Path("/tmp").resolve()
         allowed_prefixes = [cwd, tmp, cwd / "cache"]

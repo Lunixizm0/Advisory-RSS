@@ -1,7 +1,7 @@
 import ipaddress
 
 
-def is_loopback(addr: str) -> bool:
+def is_loopback(addr: str | None) -> bool:
     if not addr or not isinstance(addr, str):
         return False
     raw = addr.strip().strip("[]").strip()

@@ -5,7 +5,7 @@ from httpx import Response
 
 from advisory_rss.cache.store import CacheStore
 from advisory_rss.config.settings import Settings
-from advisory_rss.github.client import AuthError, GitHubClient
+from advisory_rss.github.client import AuthError, GitHubClient, GitHubError
 
 pytestmark = pytest.mark.asyncio
 
@@ -169,7 +169,7 @@ async def test_github_404_skip(tmp_path):
     respx.get(url__regex=r".*security-advisories.*").mock(
         return_value=Response(404, json={"message": "not found"})
     )
-    advs, diag = await client.sync_all(authenticated_login="octocat")
+    advs, _diag = await client.sync_all(authenticated_login="octocat")
     assert advs == []
     await client.close()
 
@@ -187,7 +187,7 @@ async def test_github_422_skip(tmp_path):
     respx.get(url__regex=r".*security-advisories.*").mock(
         return_value=Response(422, json={"message": "validation failed"})
     )
-    advs, diag = await client.sync_all(authenticated_login="octocat")
+    advs, _diag = await client.sync_all(authenticated_login="octocat")
     assert advs == []
     await client.close()
 
@@ -226,7 +226,7 @@ async def test_github_malformed_api_response_skip_one(tmp_path):
         return Response(200, json=[adv_payload("GHSA-good", author="octocat"), {"bad": "data"}])
 
     respx.get(url__regex=r".*security-advisories.*").mock(side_effect=adv_route)
-    advs, diag = await client.sync_all(authenticated_login="octocat")
+    advs, _diag = await client.sync_all(authenticated_login="octocat")
     # Should have 1 good, bad skipped via normalization => filtered count 1
     assert any(a.ghsa_id == "GHSA-good" for a in advs)
     await client.close()
@@ -272,7 +272,7 @@ async def test_network_failure_then_stale(tmp_path):
         raise httpx.ConnectError("network down")
 
     respx.get(f"{API}/user").mock(side_effect=failing)
-    with pytest.raises(Exception):
+    with pytest.raises(GitHubError):
         await client.get_user()
     assert call_count["n"] == 4  # 1 initial + 3 retries
     await client.close()

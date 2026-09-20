@@ -65,8 +65,8 @@ def _is_rate_limit_response(resp: httpx.Response) -> bool:
             body = resp.text.lower()
             if "rate limit" in body or "secondary rate limit" in body:
                 return True
-        except Exception:
-            pass
+        except (ValueError, RuntimeError, UnicodeDecodeError) as e:
+            logger.debug("rate limit body check failed: %s", _redact(str(e)))
     return False
 
 
@@ -117,8 +117,8 @@ class GitHubClient:
     async def close(self) -> None:
         try:
             await self._client.aclose()
-        except Exception:
-            pass
+        except (OSError, RuntimeError, httpx.HTTPError) as e:
+            logger.debug("client close failed: %s", _redact(str(e)))
 
     async def _request_with_retry(
         self,
@@ -159,7 +159,8 @@ class GitHubClient:
                     etag = self.cache.get_etag(etag_key)
                     if etag:
                         hdrs["If-None-Match"] = etag
-            except Exception:
+            except (ValueError, RuntimeError, httpx.HTTPError) as e:
+                logger.debug("etag key build failed: %s", _redact(str(e)))
                 etag_key = url
                 hdrs = dict(req_headers)
 
@@ -208,8 +209,8 @@ class GitHubClient:
                         # Need full URL key as above
                         key = etag_key
                         self.cache.set_etag(key, etag_resp)
-                    except Exception:
-                        pass
+                    except (OSError, ValueError, RuntimeError) as e:
+                        logger.debug("set_etag failed: %s", _redact(str(e)))
 
             # Rate limit handling
             if _is_rate_limit_response(resp):
@@ -292,7 +293,7 @@ class GitHubClient:
             raise GitHubError(f"Failed to get user: {resp.status_code} {_redact(resp.text[:500])}")
         try:
             return resp.json()
-        except Exception as e:
+        except (ValueError, RuntimeError) as e:
             raise GitHubError(f"Malformed /user JSON: {e}") from e
 
     async def list_repos(self) -> list[dict[str, Any]]:
@@ -332,7 +333,7 @@ class GitHubClient:
                     break
                 try:
                     data = resp.json()
-                except Exception as e:
+                except (ValueError, RuntimeError) as e:
                     logger.warning("Malformed JSON on /user/repos: %s", e)
                     break
                 if not isinstance(data, list):
@@ -370,8 +371,10 @@ class GitHubClient:
         if resp is None or resp.status_code != 200:
             return []
         try:
-            return resp.json() if isinstance(resp.json(), list) else []
-        except Exception:
+            data = resp.json()
+            return data if isinstance(data, list) else []
+        except (ValueError, RuntimeError) as e:
+            logger.debug("list_user_orgs json failed: %s", _redact(str(e)))
             return []
 
     async def list_repo_advisories_for_repo(
@@ -432,7 +435,7 @@ class GitHubClient:
                     break
                 try:
                     data = resp.json()
-                except Exception as e:
+                except (ValueError, RuntimeError) as e:
                     logger.warning("Malformed JSON for %s/%s state=%s: %s", owner, repo, state, e)
                     break
                 if not isinstance(data, list):
@@ -493,7 +496,7 @@ class GitHubClient:
                     break
                 try:
                     data = resp.json()
-                except Exception as e:
+                except (ValueError, RuntimeError) as e:
                     logger.warning("Malformed JSON org %s state=%s: %s", org, state, e)
                     break
                 if not isinstance(data, list) or not data:
@@ -545,7 +548,7 @@ class GitHubClient:
                     aggregated_raw.extend(raw)
             except (AuthError, RateLimitError):
                 raise
-            except Exception as e:
+            except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
                 diag["errors"].append(_redact(f"org {org}: {e}"))
 
         if self.settings.skip_full_scan:
@@ -566,8 +569,8 @@ class GitHubClient:
             if self.cache is not None:
                 try:
                     self.cache.mark_error(msg)
-                except Exception:
-                    pass
+                except (OSError, ValueError, RuntimeError) as e:
+                    logger.debug("mark_error failed: %s", _redact(str(e)))
             diag["repos_scanned"] = 0
             diag["raw_count"] = 0
             diag["normalized_count"] = 0
@@ -590,7 +593,8 @@ class GitHubClient:
                         break
                     try:
                         data = resp.json()
-                    except Exception:
+                    except (ValueError, RuntimeError) as e:
+                        logger.debug("org repos json failed %s: %s", org, _redact(str(e)))
                         break
                     if not isinstance(data, list):
                         break
@@ -602,7 +606,7 @@ class GitHubClient:
                     full = gr.get("full_name") if isinstance(gr, dict) else None
                     if isinstance(full, str) and not any(r.get("full_name") == full for r in repos):
                         repos.append(gr)
-            except Exception as e:
+            except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
                 diag["errors"].append(_redact(f"extra org {org}: {e}"))
         # Add explicit extra repos (even if not in affiliation list) - fetch repo object minimal
         for full in extra_repos:
@@ -634,7 +638,7 @@ class GitHubClient:
                     aggregated_raw.extend(raws)
             except (AuthError, RateLimitError):
                 raise
-            except Exception as e:
+            except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
                 diag["errors"].append(_redact(f"repo {full}: {e}"))
                 continue
             # small cooperative yield

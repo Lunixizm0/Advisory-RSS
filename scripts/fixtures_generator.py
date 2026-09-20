@@ -16,10 +16,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+import httpx
 
 # Ensure src on path when running as script
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +35,8 @@ from advisory_rss.config.settings import get_settings
 from advisory_rss.github.client import GitHubClient
 
 TOKEN_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+)")
+
+logger = logging.getLogger(__name__)
 
 
 def _redact(s: str) -> str:
@@ -59,7 +64,7 @@ async def _fetch_one_ghsa(client: GitHubClient, ghsa: str, repo: str | None) -> 
             if resp is not None and resp.status_code == 200:
                 try:
                     return resp.json()
-                except Exception as e:
+                except (ValueError, json.JSONDecodeError, RuntimeError) as e:
                     print(f"  warn: repo GHSA {ghsa} json parse failed: {_redact(str(e))}")
             elif resp is not None and resp.status_code == 304:
                 # stale cache - try without etag
@@ -70,7 +75,7 @@ async def _fetch_one_ghsa(client: GitHubClient, ghsa: str, repo: str | None) -> 
                 )
                 if resp2 is not None and resp2.status_code == 200:
                     return resp2.json()
-        except Exception as e:
+        except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
             print(f"  warn: repo GHSA fetch failed {ghsa} @ {repo}: {_redact(str(e))}")
 
     # Try global (no ETag)
@@ -78,7 +83,7 @@ async def _fetch_one_ghsa(client: GitHubClient, ghsa: str, repo: str | None) -> 
         resp = await client._request_with_retry("GET", f"/advisories/{ghsa}", use_etag=False)
         if resp is not None and resp.status_code == 200:
             return resp.json()
-    except Exception as e:
+    except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
         print(f"  warn: global GHSA fetch failed {ghsa}: {_redact(str(e))}")
 
     # Try GraphQL
@@ -99,7 +104,7 @@ async def _fetch_one_ghsa(client: GitHubClient, ghsa: str, repo: str | None) -> 
             j = r.json()
             if j.get("data", {}).get("securityAdvisory"):
                 return j["data"]["securityAdvisory"]
-    except Exception as e:
+    except (httpx.HTTPError, OSError, ValueError, RuntimeError, json.JSONDecodeError) as e:
         print(f"  warn: graphql GHSA fetch failed {ghsa}: {_redact(str(e))}")
     return None
 
@@ -129,8 +134,8 @@ async def main_async(args: argparse.Namespace) -> int:
                 try:
                     p.unlink()
                     print(f"cleaned {p.relative_to(ROOT)}")
-                except Exception:
-                    pass
+                except OSError as e:
+                    logger.debug("cleanup failed %s: %s", p, _redact(str(e)))
 
     # Use temp cache (isolated so we don't pollute real cache/cache/advisories.db)
     tmp_cache = Path(args.cache).resolve() if args.cache else fixtures_dir / ".tmp-cache.db"
@@ -139,8 +144,8 @@ async def main_async(args: argparse.Namespace) -> int:
         for p in fixtures_dir.glob(".tmp-cache.*"):
             try:
                 p.unlink()
-            except Exception:
-                pass
+            except OSError as e:
+                logger.debug("cleanup tmp cache failed %s: %s", p, _redact(str(e)))
     cache = CacheStore(tmp_cache)
     client = GitHubClient(settings, token, cache=cache)
 
@@ -260,14 +265,14 @@ async def main_async(args: argparse.Namespace) -> int:
                 for p in fixtures_dir.glob(".tmp-cache.*"):
                     p.unlink(missing_ok=True)
                 print(f"cleaned {tmp_cache.relative_to(ROOT)}")
-            except Exception:
-                pass
+            except OSError as e:
+                logger.debug("tmp cache cleanup failed: %s", _redact(str(e)))
         elif args.clean_cache and tmp_cache.exists():
             tmp_cache.unlink(missing_ok=True)
             for p in fixtures_dir.glob(".tmp-cache.*"):
                 p.unlink(missing_ok=True)
         return 0
-    except Exception as e:
+    except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
         print(f"ERROR: {_redact(str(e))}", file=sys.stderr)
         import traceback
 
@@ -277,8 +282,8 @@ async def main_async(args: argparse.Namespace) -> int:
         await client.close()
         try:
             cache.close()
-        except Exception:
-            pass
+        except (OSError, RuntimeError) as e:
+            logger.debug("cache close failed: %s", _redact(str(e)))
 
 
 def main() -> int:

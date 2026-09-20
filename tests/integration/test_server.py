@@ -86,13 +86,19 @@ def test_integration_rss_returns_valid_200(tmp_path):
         items = channel.findall("item")
         assert len(items) >= 2
         for item in items:
-            assert item.find("guid") is not None
-            assert item.find("guid").attrib["isPermaLink"] == "false"
-            assert item.find("title") is not None
-            assert item.find("link") is not None
-            assert item.find("link").text.startswith("https://github.com/")
-            assert item.find("description") is not None
-            assert item.find("pubDate") is not None
+            guid = item.find("guid")
+            assert guid is not None
+            assert guid.attrib["isPermaLink"] == "false"
+            title = item.find("title")
+            assert title is not None
+            link_elem = item.find("link")
+            assert link_elem is not None
+            assert link_elem.text is not None
+            assert link_elem.text.startswith("https://github.com/")
+            desc = item.find("description")
+            assert desc is not None
+            pub_date = item.find("pubDate")
+            assert pub_date is not None
 
         # GET /health
         rh = httpx.get(f"http://127.0.0.1:{port}/health", timeout=5)

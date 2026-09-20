@@ -32,7 +32,6 @@ def test_no_token_in_rss():
 
 def test_no_token_in_logs(caplog):
     caplog.set_level(logging.WARNING)
-    logger = logging.getLogger("advisory_rss.github.client")
     # Simulate redaction via client helper: we check log doesn't contain token via _redact in client
     from advisory_rss.github.client import _redact
 
