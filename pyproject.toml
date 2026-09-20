@@ -1,6 +1,6 @@
 [project]
 name = "advisory-rss"
-version = "1.0.0"
+version = "2.0.0"
 description = "Security-first localhost-only service that lists GitHub Security Advisories created by the authenticated account as RSS 2.0 for Zen Browser"
 readme = "README.md"
 license = { text = "GPL-3.0" }
