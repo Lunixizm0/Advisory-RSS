@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from advisory_rss import __version__
 from advisory_rss.auth.pat import load_token
 from advisory_rss.cache.store import CacheStore
 from advisory_rss.config.constants import TOKEN_REDACT_PATTERN
@@ -94,7 +95,7 @@ def create_app(
 
     app = FastAPI(
         title="Advisory RSS",
-        version="0.2.0",
+        version=__version__,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
