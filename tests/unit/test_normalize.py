@@ -74,7 +74,7 @@ def test_normalize_full():
     assert adv.cve_id == raw.get("cve_id")
     assert adv.severity == (raw.get("severity") or "medium").lower()
     assert adv.summary == raw.get("summary")
-    # author is per-user - compare to fixture, not hardcoded Lunixizm0
+
     expected_author = (
         (raw.get("author") or {}).get("login") if isinstance(raw.get("author"), dict) else None
     )

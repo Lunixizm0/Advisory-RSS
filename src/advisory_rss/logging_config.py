@@ -289,6 +289,7 @@ def setup_logging(
     _configured_format = fmt_str
     _configured_log_file = normalized_log_file or ""
 
+
 def get_uvicorn_log_config(level: str = "INFO") -> dict[str, Any]:
     lvl = (level or "INFO").upper()
     if lvl not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):

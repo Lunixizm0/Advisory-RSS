@@ -1,4 +1,4 @@
-"""Gmail OAuth helpers for CERT-TR IMAP (XOAUTH2)."""
+#Gmail OAuth helpers
 
 from __future__ import annotations
 
@@ -80,34 +80,46 @@ def get_refresh_token_for_email(
     email: str,
     settings: Any,
 ) -> tuple[str | None, str | None, str | None]:
-    """Return (refresh_token, client_id, client_secret) for email.
-
-    Checks env vars first (GMAIL_OAUTH_REFRESH_TOKEN etc), then file.
-    For multi-account, checks GMAIL_OAUTH_REFRESH_TOKENS aligned with GMAIL_EMAILS.
-    """
+    #Return (refresh_token, client_id, client_secret) for email.
+  #Checks env vars first (GMAIL_OAUTH_REFRESH_TOKEN etc), then file.
+    #For multi-account, checks GMAIL_OAUTH_REFRESH_TOKENS aligned with GMAIL_EMAILS.
     # Check env single/multi
     # settings may have gmail_oauth_refresh_token(s) and client_id/secret
     try:
-        # Use get_gmail_accounts logic? But we can directly check settings
-        # Check file first for per-account
-        file_data = _load_oauth_file(getattr(settings, "gmail_oauth_token_file", DEFAULT_GMAIL_OAUTH_CACHE))
+        file_data = _load_oauth_file(
+            getattr(settings, "gmail_oauth_token_file", DEFAULT_GMAIL_OAUTH_CACHE)
+        )
         # Try file per-account
         accounts = file_data.get("accounts") if isinstance(file_data, dict) else None
         if isinstance(accounts, dict) and email in accounts:
             info = accounts[email]
             if isinstance(info, dict) and info.get("refresh_token"):
                 cid = file_data.get("client_id") or getattr(settings, "gmail_oauth_client_id", None)
-                csec = file_data.get("client_secret") or getattr(settings, "gmail_oauth_client_secret", None)
-                return str(info["refresh_token"]), str(cid or "") if cid else None, str(csec or "") if csec else None
+                csec = file_data.get("client_secret") or getattr(
+                    settings, "gmail_oauth_client_secret", None
+                )
+                return (
+                    str(info["refresh_token"]),
+                    str(cid or "") if cid else None,
+                    str(csec or "") if csec else None,
+                )
             if isinstance(info, str):
                 cid = file_data.get("client_id") or getattr(settings, "gmail_oauth_client_id", None)
-                csec = file_data.get("client_secret") or getattr(settings, "gmail_oauth_client_secret", None)
+                csec = file_data.get("client_secret") or getattr(
+                    settings, "gmail_oauth_client_secret", None
+                )
                 return info, str(cid or "") if cid else None, str(csec or "") if csec else None
         # Check flat file
         if isinstance(file_data, dict) and email in file_data and isinstance(file_data[email], str):
             cid = file_data.get("client_id") or getattr(settings, "gmail_oauth_client_id", None)
-            csec = file_data.get("client_secret") or getattr(settings, "gmail_oauth_client_secret", None)
-            return str(file_data[email]), str(cid or "") if cid else None, str(csec or "") if csec else None
+            csec = file_data.get("client_secret") or getattr(
+                settings, "gmail_oauth_client_secret", None
+            )
+            return (
+                str(file_data[email]),
+                str(cid or "") if cid else None,
+                str(csec or "") if csec else None,
+            )
 
         # Check env multi
         gmail_emails = getattr(settings, "gmail_emails", None)
@@ -117,35 +129,40 @@ def get_refresh_token_for_email(
             import re
 
             emails = [e.strip() for e in re.split(r"[,\s;]+", gmail_emails) if e.strip()]
-            # For refresh tokens, split on comma only (preserve spaces? refresh tokens have no spaces)
             rts = [r.strip() for r in gmail_refresh_tokens.split(",") if r.strip()]
             try:
                 idx = [e.lower() for e in emails].index(email.lower())
                 if idx < len(rts):
                     cid = getattr(settings, "gmail_oauth_client_id", None)
                     csec = getattr(settings, "gmail_oauth_client_secret", None)
-                    return rts[idx], str(cid or "") if cid else None, str(csec or "") if csec else None
+                    return (
+                        rts[idx],
+                        str(cid or "") if cid else None,
+                        str(csec or "") if csec else None,
+                    )
             except ValueError:
                 pass
 
         # Check env single
         single_rt = getattr(settings, "gmail_oauth_refresh_token", None)
         if single_rt and single_rt.strip():
-            # If single email matches or only one email configured
-            # If settings has single gmail_email matching, use it; else if only one refresh token and email matches gmail_email
             gmail_email = getattr(settings, "gmail_email", None)
             if gmail_email and gmail_email.strip().lower() == email.lower():
                 cid = getattr(settings, "gmail_oauth_client_id", None)
                 csec = getattr(settings, "gmail_oauth_client_secret", None)
-                return single_rt.strip(), str(cid or "") if cid else None, str(csec or "") if csec else None
-            # If no specific email, but we have refresh token and email is the one being queried, return it
-            # This handles case where get_gmail_accounts already built with refresh token
+                return (
+                    single_rt.strip(),
+                    str(cid or "") if cid else None,
+                    str(csec or "") if csec else None,
+                )
             cid = getattr(settings, "gmail_oauth_client_id", None)
             csec = getattr(settings, "gmail_oauth_client_secret", None)
-            # Only return if email is in gmail accounts list or if no list
-            # For safety, return if we have a refresh token and no other mapping
             if not gmail_emails:
-                return single_rt.strip(), str(cid or "") if cid else None, str(csec or "") if csec else None
+                return (
+                    single_rt.strip(),
+                    str(cid or "") if cid else None,
+                    str(csec or "") if csec else None,
+                )
     except (OSError, ValueError, AttributeError) as e:
         logger.debug("get_refresh_token failed for %s: %s", email, e)
     return None, None, None
@@ -157,11 +174,7 @@ def fetch_access_token(
     client_secret: str,
     token_uri: str = GMAIL_OAUTH_TOKEN_URI,
 ) -> tuple[str, int | None]:
-    """Exchange refresh token for access token via Google OAuth2.
-
-    Returns (access_token, expires_in_seconds).
-    Raises on failure.
-    """
+    #Exchange refresh token for access token via Google OAuth2.
     if not refresh_token or not client_id or not client_secret:
         raise ValueError("Missing OAuth credentials (refresh_token/client_id/secret)")
 
@@ -200,12 +213,12 @@ def run_gmail_oauth_flow(
     client_secret: str,
     email: str | None = None,
 ) -> tuple[str, str, str | None]:
-    """Run InstalledAppFlow to obtain refresh token.
+    #Run InstalledAppFlow to obtain refresh token.
 
-    Returns (refresh_token, access_token, expiry).
-    Requires google-auth-oauthlib to be installed.
-    Opens browser for user consent.
-    """
+    #Returns (refresh_token, access_token, expiry).
+    #Requires google-auth-oauthlib to be installed.
+    #Opens browser for user consent.
+    
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow
     except ImportError as e:
@@ -225,10 +238,6 @@ def run_gmail_oauth_flow(
     }
 
     flow = InstalledAppFlow.from_client_config(client_config, scopes=GMAIL_OAUTH_SCOPES)
-    # Optional: set login hint if email provided
-    # The flow will open browser; we use local server
-    # Use port 0 to get random available port, or 8080
-    # prompt=consent to ensure refresh_token is returned
     creds = flow.run_local_server(
         port=0,
         prompt="consent",
@@ -240,9 +249,10 @@ def run_gmail_oauth_flow(
     expiry = getattr(creds, "expiry", None)
     expiry_str = expiry.isoformat() if expiry else None
     if not refresh_token:
-        # Sometimes refresh_token is only returned on first consent; if not, we try to use existing
-        # But we should warn
-        logger.warning("OAuth flow did not return a refresh_token (maybe already consented). Try revoking access and retrying.")
-        # Fallback: try to use current refresh token if available? For now, raise
-        raise ValueError("No refresh_token returned from OAuth flow. Ensure you revoke previous consent in Google Account and retry with prompt=consent.")
+        logger.warning(
+            "OAuth flow did not return a refresh_token (maybe already consented). Try revoking access and retrying."
+        )
+        raise ValueError(
+            "No refresh_token returned from OAuth flow. Ensure you revoke previous consent in Google Account and retry with prompt=consent."
+        )
     return str(refresh_token), str(access_token or ""), expiry_str

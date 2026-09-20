@@ -1,1 +1,1 @@
-"""CERT-TR / SGB Proton Mail source package."""
+#CERT-TR / SGB Proton Mail source package

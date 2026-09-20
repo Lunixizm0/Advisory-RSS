@@ -1,4 +1,4 @@
-"""CERT-TR source orchestrator: IMAP fetch -> parser -> NormalizedAdvisory list."""
+#CERT-TR source orchestrator: IMAP fetch -> parser -> NormalizedAdvisory list.
 
 from __future__ import annotations
 
@@ -19,11 +19,7 @@ class CertTrSource:
         self.settings = settings
 
     def fetch_all(self) -> tuple[list[NormalizedAdvisory], dict[str, Any]]:
-        """Fetch from all configured Proton accounts.
-
-        Returns (advisories, diag). Never raises (errors go to diag).
-        Dedup by ghsa_id (CERT-TR-CVE-...) keep newest (by updated_at).
-        """
+        #Fetch from all configured Proton accounts.
         diag: dict[str, Any] = {
             "accounts": 0,
             "raw_fetched": 0,
@@ -56,7 +52,9 @@ class CertTrSource:
             folder = acc.get("folder", "INBOX")
             provider = acc.get("provider", "unknown")
             if not acc.get("password"):
-                msg = f"{provider} account {email}/{folder}: missing password/app-password - skipping"
+                msg = (
+                    f"{provider} account {email}/{folder}: missing password/app-password - skipping"
+                )
                 logger.warning(msg)
                 diag["errors"].append(msg)
                 continue

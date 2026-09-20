@@ -20,7 +20,9 @@ def test_cert_tr_parse_sample():
 
 
 def test_cert_tr_sender_allowlist():
-    assert is_cert_tr_sender("Ürün Güvenliği Koordinasyon Ekibi <cve@siberguvenlik.gov.tr>", ["siberguvenlik.gov.tr"])
+    assert is_cert_tr_sender(
+        "Ürün Güvenliği Koordinasyon Ekibi <cve@siberguvenlik.gov.tr>", ["siberguvenlik.gov.tr"]
+    )
     assert is_cert_tr_sender("cve@siberguvenlik.gov.tr", ["siberguvenlik.gov.tr"])
     assert not is_cert_tr_sender("noreply@github.com", ["siberguvenlik.gov.tr"])
     assert is_cert_tr_sender("test@usom.gov.tr", ["siberguvenlik.gov.tr", "usom.gov.tr"])
@@ -44,7 +46,9 @@ def test_cert_tr_parser_handles_quoted_printable_charset():
     adv = parse_cert_tr_email(raw)
     assert adv is not None
     # Check Turkish chars decoded correctly
-    assert "TÜBİTAK" in adv.description or "TUBITAK" in adv.description or "BİLGEM" in adv.description
+    assert (
+        "TÜBİTAK" in adv.description or "TUBITAK" in adv.description or "BİLGEM" in adv.description
+    )
 
 
 def test_cert_tr_parser_no_cve_skipped():

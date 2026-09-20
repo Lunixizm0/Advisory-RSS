@@ -1,4 +1,4 @@
-"""IMAP fetcher for CERT-TR mails via Proton Bridge and Gmail (never marks read)."""
+#IMAP fetcher for CERT-TR mails via Proton Bridge and Gmail
 
 from __future__ import annotations
 
@@ -20,9 +20,6 @@ ALLOWED_HOSTS = {
     "imap.gmail.com",
     "imap.googlemail.com",
 }
-
-# Never mark read: we always use BODY.PEEK and SELECT readonly=True
-
 
 def _ssl_context_for_host(host: str) -> ssl.SSLContext:
     # Proton Bridge uses self-signed cert -> no verification
@@ -64,7 +61,7 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
     else:  # NONE
         mail = imaplib.IMAP4(host, port)
 
-    # Gmail OAuth (XOAUTH2) if configured
+    # Gmail OAuth if configured
     if auth_method == "oauth" and oauth_refresh_token:
         # Need client_id/secret
         if not oauth_client_id or not oauth_client_secret:
@@ -77,12 +74,18 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
             )
             xoauth2 = build_xoauth2_string(email, access_token)
 
-            # imaplib authenticate with XOAUTH2
             def _auth_cb(_: bytes) -> str:
                 return xoauth2
 
             mail.authenticate("XOAUTH2", _auth_cb)  # type: ignore[arg-type]
-        except (OSError, ValueError, RuntimeError, imaplib.IMAP4.error, httpx.HTTPError, ImportError) as e:
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            imaplib.IMAP4.error,
+            httpx.HTTPError,
+            ImportError,
+        ) as e:
             logger.error("IMAP XOAUTH2 failed for %s: %s", email, e)
             raise
     else:
@@ -97,7 +100,6 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
 
 
 def _encode_modified_utf7(s: str) -> str:
-    # IMAP modified UTF-7 (RFC 3501): encode non-ASCII runs as &<base64>- where base64 uses , for /
     import base64
 
     res: list[str] = []
@@ -133,16 +135,12 @@ def _encode_modified_utf7(s: str) -> str:
     return "".join(res)
 
 
-def _select_folder_imap(mail: imaplib.IMAP4, folder: str, readonly: bool = True) -> tuple[str, list[bytes]]:
-    # Try UTF-8 first (if server supports UTF8=ACCEPT), then modified UTF-7
-    # Gmail supports both, but Proton Bridge is ASCII-only, so INBOX will succeed directly.
-    # For non-ASCII like "CVE Yazışmaları", try UTF-8, then fallback to modified UTF-7.
-    # Try with mail._encoding = 'utf-8'
+def _select_folder_imap(
+    mail: imaplib.IMAP4, folder: str, readonly: bool = True
+) -> tuple[str, list[bytes]]:
     orig_enc = getattr(mail, "_encoding", "ascii")
     # First try: enable UTF8 if possible
     try:
-        # Some servers require ENABLE UTF8=ACCEPT before UTF-8 mailbox names
-        # Ignore failure
         try:
             mail.enable("UTF8=ACCEPT")
         except (imaplib.IMAP4.error, OSError, ValueError):
@@ -197,11 +195,6 @@ def fetch_raw_emails(
     max_mails: int = 200,
     search_days: int | None = None,
 ) -> list[bytes]:
-    """Fetch raw RFC822 bytes for one account, never marking as read.
-
-    Returns list of raw bytes, newest first (reverse UID).
-    Handles reconnect every 25 to avoid Bridge drops.
-    """
     folder = account.get("folder", "INBOX") or "INBOX"
     email = account.get("email", "unknown")
     raw_list: list[bytes] = []
@@ -270,7 +263,13 @@ def fetch_raw_emails(
                 try:
                     mail = connect_imap(account)
                     _select_folder_imap(mail, folder, readonly=True)
-                except (OSError, imaplib.IMAP4.error, ssl.SSLError, ValueError, UnicodeEncodeError) as e:
+                except (
+                    OSError,
+                    imaplib.IMAP4.error,
+                    ssl.SSLError,
+                    ValueError,
+                    UnicodeEncodeError,
+                ) as e:
                     logger.warning("IMAP reconnect failed %s batch %d: %s", email, i, e)
                     break
 
@@ -281,7 +280,11 @@ def fetch_raw_emails(
                     if typ != "OK" or not fdata:
                         continue
                     for item in fdata:
-                        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], bytes):
+                        if (
+                            isinstance(item, tuple)
+                            and len(item) == 2
+                            and isinstance(item[1], bytes)
+                        ):
                             raw_list.append(item[1])
                             fetched += 1
                         elif isinstance(item, bytes) and len(item) > 100:

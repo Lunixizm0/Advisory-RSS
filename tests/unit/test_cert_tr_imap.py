@@ -3,7 +3,10 @@ from unittest.mock import MagicMock, patch
 
 from advisory_rss.cert_tr.imap import fetch_raw_emails
 
-SAMPLE_RAW = b"From: cve@siberguvenlik.gov.tr\r\nSubject: Test CVE-2026-0001\r\n\r\nBody CVE-2026-0001"
+SAMPLE_RAW = (
+    b"From: cve@siberguvenlik.gov.tr\r\nSubject: Test CVE-2026-0001\r\n\r\nBody CVE-2026-0001"
+)
+
 
 def _mock_imap(data_bytes_list):
     """Create mock IMAP object that returns uids and fetches."""
@@ -12,6 +15,7 @@ def _mock_imap(data_bytes_list):
     mock.select.return_value = ("OK", [b"1"])
     # search returns uids
     mock.search.return_value = ("OK", [b"1 2"])
+
     # fetch returns tuple per uid
     def fetch_side(uid, _what):
         # uid can be bytes like b"2" or b"1"
@@ -23,11 +27,20 @@ def _mock_imap(data_bytes_list):
         idx = 0 if uid_s == "2" else 1
         raw = data_bytes_list[idx] if idx < len(data_bytes_list) else data_bytes_list[0]
         return ("OK", [(b"1 (BODY[] {10}", raw)])
+
     mock.fetch.side_effect = fetch_side
     return mock
 
+
 def test_fetch_never_marks_read():
-    acc = {"email": "a@proton.me", "password": "p", "folder": "INBOX", "host": "127.0.0.1", "port": "1143", "security": "STARTTLS"}
+    acc = {
+        "email": "a@proton.me",
+        "password": "p",
+        "folder": "INBOX",
+        "host": "127.0.0.1",
+        "port": "1143",
+        "security": "STARTTLS",
+    }
     with patch("advisory_rss.cert_tr.imap.connect_imap") as mock_connect:
         mock = _mock_imap([SAMPLE_RAW, SAMPLE_RAW])
         mock_connect.return_value = mock
@@ -44,9 +57,18 @@ def test_fetch_never_marks_read():
             assert kwargs.get("readonly") is True
         assert len(raws) == 2
 
+
 def test_fetch_multi_account_distinct_folders():
     from advisory_rss.config.settings import Settings
-    s = Settings(_env_file="/dev/null", ENABLE_CERT_TR="true", PROTON_BRIDGE_EMAILS="a@proton.me,b@proton.me", PROTON_BRIDGE_PASSWORDS="p1,p2", PROTON_IMAP_FOLDERS="INBOX,INBOX.CERT-TR", _env_file_encoding="utf-8")
+
+    s = Settings(
+        _env_file="/dev/null",
+        ENABLE_CERT_TR="true",
+        PROTON_BRIDGE_EMAILS="a@proton.me,b@proton.me",
+        PROTON_BRIDGE_PASSWORDS="p1,p2",
+        PROTON_IMAP_FOLDERS="INBOX,INBOX.CERT-TR",
+        _env_file_encoding="utf-8",
+    )
     accs = s.get_proton_accounts()
     assert accs[0]["folder"] == "INBOX"
     assert accs[1]["folder"] == "INBOX.CERT-TR"

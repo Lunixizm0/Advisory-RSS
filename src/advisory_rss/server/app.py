@@ -115,7 +115,9 @@ def create_app(
         # per-source counts
         try:
             all_advs = cache.load_all()
-            github_count = sum(1 for a in all_advs if (getattr(a, "source", "github") or "github") == "github")
+            github_count = sum(
+                1 for a in all_advs if (getattr(a, "source", "github") or "github") == "github"
+            )
             cert_tr_count = sum(1 for a in all_advs if getattr(a, "source", "") == "cert-tr")
         except (OSError, ValueError, RuntimeError, AttributeError) as e:
             logger.debug("Failed to load per-source counts: %s", e)
@@ -138,7 +140,9 @@ def create_app(
                 "github_count": github_count,
                 "cert_tr_count": cert_tr_count,
                 "cert_tr_enabled": settings.enable_cert_tr,
-                "cert_tr_accounts": len(settings.get_cert_tr_accounts()) if settings.enable_cert_tr else 0,
+                "cert_tr_accounts": len(settings.get_cert_tr_accounts())
+                if settings.enable_cert_tr
+                else 0,
                 "cert_tr_diag": cert_tr_diag,
                 "last_successful_sync": meta.last_successful_sync,
                 "next_scheduled_sync": meta.next_scheduled_sync,
@@ -179,11 +183,15 @@ def create_app(
         # Serve from cache only - never call GitHub/IMAP here
         advisories = cache.load_sorted(limit=None)  # load all sorted, builder caps by max_items
         if src_filter != "all":
-            advisories = [a for a in advisories if (getattr(a, "source", "github") or "github") == src_filter]
+            advisories = [
+                a for a in advisories if (getattr(a, "source", "github") or "github") == src_filter
+            ]
         feed_user = cache.get_meta("authenticated_user") or "user"
         ttl_minutes = max(1, settings.refresh_interval // 60)
         # Mixed feed title when both sources present
-        has_github = any((getattr(a, "source", "github") or "github") == "github" for a in advisories)
+        has_github = any(
+            (getattr(a, "source", "github") or "github") == "github" for a in advisories
+        )
         has_cert = any(getattr(a, "source", "") == "cert-tr" for a in advisories)
         if has_github and has_cert and src_filter == "all":
             feed_title = f"Security Advisories (GitHub + CERT-TR) - @{feed_user}"
@@ -195,7 +203,11 @@ def create_app(
             feed_title = f"GitHub Security Advisories - @{feed_user}"
             feed_desc = f"Security advisories created by {feed_user} (author={feed_user}) via GitHub API - localhost-only feed"
         # Keep feed_link sensible
-        feed_link = f"https://github.com/{feed_user}" if src_filter != "cert-tr" else "https://siberguvenlik.gov.tr"
+        feed_link = (
+            f"https://github.com/{feed_user}"
+            if src_filter != "cert-tr"
+            else "https://siberguvenlik.gov.tr"
+        )
         xml = build_rss(
             advisories,
             feed_title=feed_title,
@@ -294,7 +306,10 @@ def create_app(
                 diag_comb["cert_tr"] = diag_ct
                 diag_comb["errors"].extend(diag_ct.get("errors") or [])
             if not all_advs:
-                raise HTTPException(status_code=502, detail=f"Refresh: no advisories (errors={diag_comb['errors'][:2]})")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Refresh: no advisories (errors={diag_comb['errors'][:2]})",
+                )
             count = cache.upsert_advisories(all_advs)
             # keep user from GitHub if present
             user = None
@@ -307,7 +322,9 @@ def create_app(
                 import json
 
                 if diag_comb.get("cert_tr"):
-                    cache.set_meta("cert_tr_diag", json.dumps(diag_comb["cert_tr"], ensure_ascii=False))
+                    cache.set_meta(
+                        "cert_tr_diag", json.dumps(diag_comb["cert_tr"], ensure_ascii=False)
+                    )
             except (OSError, ValueError, TypeError, RuntimeError) as e:
                 logger.debug("Failed to persist cert_tr_diag: %s", e)
             logger.info("POST /refresh ok: count=%d", count, extra={"diag": diag_comb})
@@ -367,7 +384,9 @@ async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None
             continue
         # Also skip if CERT-TR enabled but no IMAP accounts and no token => nothing to do
         if not token and settings.enable_cert_tr and not settings.get_cert_tr_accounts():
-            logger.info("Background refresh skipped - CERT-TR enabled but no IMAP accounts and no GitHub token")
+            logger.info(
+                "Background refresh skipped - CERT-TR enabled but no IMAP accounts and no GitHub token"
+            )
             continue
         try:
             all_advs = []

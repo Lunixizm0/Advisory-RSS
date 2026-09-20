@@ -78,10 +78,16 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
     raw_link = adv.html_url.strip() if adv.html_url else ""
     if src == "cert-tr":
         # fallback to NVD or siberguvenlik portal if not safe
-        fallback = f"https://nvd.nist.gov/vuln/detail/{adv.cve_id}" if adv.cve_id else "https://siberguvenlik.gov.tr"
+        fallback = (
+            f"https://nvd.nist.gov/vuln/detail/{adv.cve_id}"
+            if adv.cve_id
+            else "https://siberguvenlik.gov.tr"
+        )
         link = raw_link if _is_safe_url(raw_link) else fallback
     else:
-        link = raw_link if _is_safe_url(raw_link) else f"https://github.com/advisories/{adv.ghsa_id}"
+        link = (
+            raw_link if _is_safe_url(raw_link) else f"https://github.com/advisories/{adv.ghsa_id}"
+        )
     link_esc = escape_text(link)
 
     guid = escape_text(adv.ghsa_id)
@@ -262,7 +268,9 @@ def _build_content_html(adv: NormalizedAdvisory) -> str:
     # source footer
     src = getattr(adv, "source", "github") or "github"
     if src == "cert-tr":
-        parts.append('<p><em>Source:</em> CERT-TR / Siber Güvenlik Başkanlığı (via Proton Mail)</p>')
+        parts.append(
+            "<p><em>Source:</em> CERT-TR / Siber Güvenlik Başkanlığı (via Proton Mail)</p>"
+        )
 
     html_str = "\n".join(parts)
     # Bound content size per item

@@ -1,4 +1,4 @@
-"""Persistent cache SQLite with WAL, parameterized queries, ETag map, stale fallback."""
+# Persistent cache SQLite with WAL, parameterized queries, ETag map, stale fallback
 
 from __future__ import annotations
 
@@ -14,9 +14,6 @@ from advisory_rss.cache.models import CacheMeta, NormalizedAdvisory
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-
-# Never log token - this store never touches token
-
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,11 +66,15 @@ class CacheStore:
             self._conn.executescript(SCHEMA)
             # Lightweight migrations for existing DBs (idempotent)
             try:
-                cols = {r[1] for r in self._conn.execute("PRAGMA table_info(advisories)").fetchall()}
+                cols = {
+                    r[1] for r in self._conn.execute("PRAGMA table_info(advisories)").fetchall()
+                }
                 if "source" not in cols:
-                    self._conn.execute("ALTER TABLE advisories ADD COLUMN source TEXT DEFAULT 'github'")
+                    self._conn.execute(
+                        "ALTER TABLE advisories ADD COLUMN source TEXT DEFAULT 'github'"
+                    )
                     logger.info("Migrated advisories: added source column")
-                # Backfill normalized_json missing source field (always, idempotent)
+                # Backfill normalized_json missing source field
                 try:
                     cur = self._conn.execute("SELECT ghsa_id, normalized_json FROM advisories")
                     for ghsa_id, nj in cur.fetchall():
@@ -92,7 +93,9 @@ class CacheStore:
                     logger.debug("backfill query failed: %s", ee)
                 # Cleanup legacy false positives: non-CVE CERT-TR entries (hash-based IDs)
                 try:
-                    cur = self._conn.execute("DELETE FROM advisories WHERE ghsa_id LIKE 'CERT-TR-MSG-%'")
+                    cur = self._conn.execute(
+                        "DELETE FROM advisories WHERE ghsa_id LIKE 'CERT-TR-MSG-%'"
+                    )
                     if cur.rowcount and cur.rowcount > 0:
                         logger.info("Cleaned up %d legacy CERT-TR non-CVE advisories", cur.rowcount)
                 except sqlite3.Error as ce:
@@ -293,8 +296,6 @@ class CacheStore:
         self.set_meta("rate_limited_until", None)
         if user:
             self.set_meta("authenticated_user", user)
-        # compute next
-        # caller sets next_scheduled via interval; but also set here roughly
         self.set_meta("advisories_count", str(self.count()))
         logger.info("cache mark_success user=%s time=%s", user or "unknown", now)
 

@@ -29,7 +29,15 @@ def test_mixed_rss():
         package_name="pardus-etap-settings",
         identifiers=[{"type": "CWE", "value": "CWE-862"}],
     )
-    xml = build_rss([gh, ct], feed_title="T", feed_link="https://example.com", feed_description="d", max_items=100, ttl_minutes=10, authenticated_user="user")
+    xml = build_rss(
+        [gh, ct],
+        feed_title="T",
+        feed_link="https://example.com",
+        feed_description="d",
+        max_items=100,
+        ttl_minutes=10,
+        authenticated_user="user",
+    )
     assert "source:github" in xml
     assert "source:cert-tr" in xml
     assert "[CERT-TR]" in xml
@@ -37,11 +45,24 @@ def test_mixed_rss():
     # order: GHSA newer first if sorted inside builder
     assert xml.index("GHSA-xxxx") < xml.index("CERT-TR-CVE")
 
+
 def test_cert_tr_rss_filter():
-    gh = NormalizedAdvisory(ghsa_id="GHSA-1", summary="g", source="github", updated_at=datetime(2026,9,20,tzinfo=UTC), published_at=datetime(2026,9,20,tzinfo=UTC))
-    ct = NormalizedAdvisory(ghsa_id="CERT-TR-CVE-1", summary="c", source="cert-tr", updated_at=datetime(2026,9,15,tzinfo=UTC), published_at=datetime(2026,9,15,tzinfo=UTC))
+    gh = NormalizedAdvisory(
+        ghsa_id="GHSA-1",
+        summary="g",
+        source="github",
+        updated_at=datetime(2026, 9, 20, tzinfo=UTC),
+        published_at=datetime(2026, 9, 20, tzinfo=UTC),
+    )
+    ct = NormalizedAdvisory(
+        ghsa_id="CERT-TR-CVE-1",
+        summary="c",
+        source="cert-tr",
+        updated_at=datetime(2026, 9, 15, tzinfo=UTC),
+        published_at=datetime(2026, 9, 15, tzinfo=UTC),
+    )
     # simulate server filter
     all_adv = [gh, ct]
-    filtered = [a for a in all_adv if getattr(a,"source","github")=="cert-tr"]
-    assert len(filtered)==1
-    assert filtered[0].ghsa_id=="CERT-TR-CVE-1"
+    filtered = [a for a in all_adv if getattr(a, "source", "github") == "cert-tr"]
+    assert len(filtered) == 1
+    assert filtered[0].ghsa_id == "CERT-TR-CVE-1"

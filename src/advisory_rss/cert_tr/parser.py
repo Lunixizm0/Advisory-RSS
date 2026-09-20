@@ -34,7 +34,6 @@ QUOTED_RE = re.compile(r"[“\"]([^”\"]{2,80})[”\"]")
 
 # Sender allowlist check is done outside but parser also extracts domain
 
-
 def decode_rfc2047(s: str | None) -> str:
     if not s:
         return ""
@@ -54,7 +53,6 @@ def decode_rfc2047(s: str | None) -> str:
         logger.debug("decode_rfc2047 failed %r: %s", s[:80], e)
         return str(s)
 
-
 def _extract_domain(from_header: str) -> str:
     # from_header already decoded may contain <addr>
     m = re.search(r"<([^>]+)>", from_header or "")
@@ -63,7 +61,6 @@ def _extract_domain(from_header: str) -> str:
     if "@" in addr:
         return addr.split("@", 1)[1].lower()
     return addr
-
 
 def _parse_date(date_str: str | None) -> datetime | None:
     if not date_str:
@@ -76,7 +73,6 @@ def _parse_date(date_str: str | None) -> datetime | None:
     except (ValueError, TypeError, AttributeError) as e:
         logger.debug("date parse failed %r: %s", date_str, e)
         return None
-
 
 def _html_to_text(html_body: str) -> str:
     # Lightweight html -> text: strip tags, decode entities, keep line breaks
@@ -101,9 +97,7 @@ def _html_to_text(html_body: str) -> str:
     s = re.sub(r" *\n *", "\n", s)
     return s.strip()
 
-
 def _extract_body(msg: EmailMessage) -> tuple[str, str | None]:
-    """Return (plain_text, html_raw_or_None). Decodes transfer encodings."""
     # Walk parts; prefer html then plain; handle multipart
     plain: str | None = None
     html_raw: str | None = None
@@ -170,7 +164,6 @@ def _extract_body(msg: EmailMessage) -> tuple[str, str | None]:
             return _html_to_text(text), text
         return text, None
 
-
 def _extract_cves(text: str) -> list[str]:
     found = CVE_RE.findall(text or "")
     # normalize upper
@@ -184,11 +177,9 @@ def _extract_cves(text: str) -> list[str]:
             out.append(c)
     return out
 
-
 def _extract_cwe(text: str) -> str | None:
     m = CWE_RE.search(text or "")
     return m.group(0).upper() if m else None
-
 
 def _extract_product(text: str) -> str | None:
     if not text:
@@ -218,8 +209,9 @@ def _extract_product(text: str) -> str | None:
         return candidates[0].strip()
     return None
 
-
-def _build_summary(subject_decoded: str, product: str | None, cve: str | None, cwe: str | None) -> str:
+def _build_summary(
+    subject_decoded: str, product: str | None, cve: str | None, cwe: str | None
+) -> str:
     # If product + CVE, build canonical summary, else decoded subject
     if product and cve:
         base = f"{product}: {cve}"
@@ -239,7 +231,6 @@ def _build_summary(subject_decoded: str, product: str | None, cve: str | None, c
         if s:
             return s
     return subject_decoded.strip() or "CERT-TR Zafiyet Bildirimi"
-
 
 def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
     """Parse raw RFC822 bytes from Proton/Bridge or Gmail into NormalizedAdvisory.
@@ -279,8 +270,6 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
     cwe = _extract_cwe(combined_text)
     product = _extract_product(combined_text)
 
-    # If no CVE found, still maybe useful? Require at least product or cwe or cve
-    # For strict CERT-TR, require CVE; otherwise skip to avoid noise from unrelated mail
     if not cve_primary and message_id:
         m = CVE_RE.search(message_id)
         if m:
@@ -296,7 +285,6 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
         )
         return None
 
-    # ID generation: strictly CVE-based (prevents false positives)
     ghsa_id = f"CERT-TR-{cve_primary.upper()}"
 
     # Extra CVEs beyond primary
@@ -310,8 +298,6 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
         description = _html_to_text(html_raw)
     if not description:
         description = combined_text[:2000]
-    # Include product/vendor context if product found and not in summary
-    # Keep within model limits; no hard truncation here, builder does it
 
     # References
     refs: list[str] = []
@@ -321,7 +307,7 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
     # also include siberguvenlik portal (generic)
     refs.append("https://siberguvenlik.gov.tr")
 
-    # Links: CVE-based NVD link (strict CVE-only)
+    # Links: CVE-based NVD link
     html_url = f"https://nvd.nist.gov/vuln/detail/{cve_primary}"
 
     # Severity: try to infer from text (kritik/yüksek/orta/düşük)

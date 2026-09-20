@@ -37,7 +37,6 @@ def configure_logging(
     force: bool = False,
     use_stderr: bool = True,
 ) -> None:
-    """Backwards-compat wrapper around centralized logging_config.setup_logging."""
     try:
         settings = get_settings()
         # Prefer explicit args, else settings
@@ -62,7 +61,6 @@ def auth() -> None:
 
 
 def _upsert_env_file(key: str, value: str, env_path: str = ".env") -> None:
-    """Create or update .env file with key=value (preserves other lines)."""
     import re as _re2
 
     p = Path(env_path)
@@ -73,7 +71,7 @@ def _upsert_env_file(key: str, value: str, env_path: str = ".env") -> None:
         except OSError as e:
             logger.debug("Failed to read %s: %s", env_path, e)
             lines = []
-    # Find existing key (case-insensitive for env var name, but keep case)
+    # Find existing key
     found = False
     new_lines: list[str] = []
     pattern = _re2.compile(rf"^\s*{_re2.escape(key)}\s*=", _re.IGNORECASE)
@@ -130,7 +128,9 @@ def _prompt_gmail_method(default: str | None = None) -> str:
     help="Gmail için yöntem (oauth veya app-password). Sadece gmail için.",
 )
 @click.option("--email", default=None, help="E-posta adresi (proton/gmail için)")
-def auth_login(provider: str | None = None, method: str | None = None, email: str | None = None) -> None:
+def auth_login(
+    provider: str | None = None, method: str | None = None, email: str | None = None
+) -> None:
     settings = get_settings()
     _setup_logging(settings.log_level, log_file=settings.log_file, log_format=settings.log_format)
     logger.info("auth login started provider=%s method=%s email=%s", provider, method, email)
@@ -141,8 +141,12 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
     provider = provider.lower()
 
     if provider == "github":
-        click.echo("GitHub PAT: fine-grained 'Repository security advisories: Read' is recommended.")
-        click.echo("Token must be set in .env as GITHUB_TOKEN - credentials file is no longer used.")
+        click.echo(
+            "GitHub PAT: fine-grained 'Repository security advisories: Read' is recommended."
+        )
+        click.echo(
+            "Token must be set in .env as GITHUB_TOKEN - credentials file is no longer used."
+        )
         existing_env = settings.token
         if existing_env:
             click.echo(f"Note: GITHUB_TOKEN already set via env ({token_preview(existing_env)}).")
@@ -196,14 +200,18 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
     if provider == "proton":
         # Proton Bridge: email + bridge password
         if not email:
-            email = click.prompt("Proton e-posta adresi", type=str, default=settings.proton_bridge_email or "")
+            email = click.prompt(
+                "Proton e-posta adresi", type=str, default=settings.proton_bridge_email or ""
+            )
             email = email.strip()
         if not email or "@" not in email:
             click.echo("Geçersiz e-posta", err=True)
             sys.exit(1)
         # Ask for bridge password (hidden)
         try:
-            bridge_pw = getpass.getpass(f"Proton Bridge şifresi ({email}) (Bridge > Mailbox details, NOT account password): ").strip()
+            bridge_pw = getpass.getpass(
+                f"Proton Bridge şifresi ({email}) (Bridge > Mailbox details, NOT account password): "
+            ).strip()
         except (EOFError, KeyboardInterrupt):
             click.echo("\nCancelled.", err=True)
             sys.exit(1)
@@ -232,10 +240,14 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
                     mail.logout()
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.debug("Proton logout failed: %s", e)
-            click.echo(f"+ Proton IMAP doğrulandı: {email} -> {acc['folder']} @ {acc['host']}:{acc['port']}")
+            click.echo(
+                f"+ Proton IMAP doğrulandı: {email} -> {acc['folder']} @ {acc['host']}:{acc['port']}"
+            )
         except (OSError, ValueError, RuntimeError) as e:
             click.echo(f"- Proton IMAP hatası: {_redact(str(e))}", err=True)
-            click.echo("Bridge çalışıyor mu? Host/port doğru mu? Şifre Bridge şifresi mi?", err=True)
+            click.echo(
+                "Bridge çalışıyor mu? Host/port doğru mu? Şifre Bridge şifresi mi?", err=True
+            )
             sys.exit(1)
 
         # Save to .env - handle multi
@@ -257,7 +269,9 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
                 else:
                     new_pw = bridge_pw
             _upsert_env_file("PROTON_BRIDGE_PASSWORDS", new_pw)
-            click.echo(f"Wrote PROTON_BRIDGE_EMAILS and PROTON_BRIDGE_PASSWORDS to .env (appended {email})")
+            click.echo(
+                f"Wrote PROTON_BRIDGE_EMAILS and PROTON_BRIDGE_PASSWORDS to .env (appended {email})"
+            )
         else:
             _upsert_env_file("PROTON_BRIDGE_EMAIL", email)
             _upsert_env_file("PROTON_BRIDGE_PASSWORD", bridge_pw)
@@ -277,7 +291,9 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
             gmail_method = "app-password"
 
         if not email:
-            default_email = settings.gmail_email or (settings.gmail_emails.split(",")[0].strip() if settings.gmail_emails else "")
+            default_email = settings.gmail_email or (
+                settings.gmail_emails.split(",")[0].strip() if settings.gmail_emails else ""
+            )
             email = click.prompt("Gmail e-posta adresi", type=str, default=default_email)
             email = email.strip()
         if not email or "@" not in email:
@@ -286,7 +302,9 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
 
         if gmail_method == "app-password":
             try:
-                app_pw = getpass.getpass(f"Gmail App Password ({email}) (16 haneli, Google Hesabı > Güvenlik > 2FA > Uygulama şifreleri): ").strip()
+                app_pw = getpass.getpass(
+                    f"Gmail App Password ({email}) (16 haneli, Google Hesabı > Güvenlik > 2FA > Uygulama şifreleri): "
+                ).strip()
             except (EOFError, KeyboardInterrupt):
                 click.echo("\nCancelled.", err=True)
                 sys.exit(1)
@@ -316,7 +334,10 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
                 click.echo(f"+ Gmail IMAP (App Password) doğrulandı: {email}")
             except (OSError, ValueError, RuntimeError) as e:
                 click.echo(f"- Gmail hatası: {_redact(str(e))}", err=True)
-                click.echo("App Password doğru mu? 2FA açık mı? IMAP enabled mi? (Gmail > Ayarlar > Yönlendirme ve POP/IMAP)", err=True)
+                click.echo(
+                    "App Password doğru mu? 2FA açık mı? IMAP enabled mi? (Gmail > Ayarlar > Yönlendirme ve POP/IMAP)",
+                    err=True,
+                )
                 sys.exit(1)
 
             # Save to .env (handle multi)
@@ -335,7 +356,9 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
                     else:
                         new_pw = app_pw
                 _upsert_env_file("GMAIL_APP_PASSWORDS", new_pw)
-                click.echo(f"Wrote GMAIL_EMAILS and GMAIL_APP_PASSWORDS to .env (appended {email}, spaces preserved)")
+                click.echo(
+                    f"Wrote GMAIL_EMAILS and GMAIL_APP_PASSWORDS to .env (appended {email}, spaces preserved)"
+                )
             else:
                 _upsert_env_file("GMAIL_EMAIL", email)
                 _upsert_env_file("GMAIL_APP_PASSWORD", app_pw)
@@ -349,11 +372,15 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
         client_secret = settings.gmail_oauth_client_secret
         if not client_id or not client_secret:
             click.echo("Gmail OAuth için Google Cloud OAuth Client ID/Secret gerekli.")
-            click.echo("Oluştur: https://console.cloud.google.com/ -> APIs & Services -> Credentials -> Create Credentials -> OAuth Client ID (Desktop)")
+            click.echo(
+                "Oluştur: https://console.cloud.google.com/ -> APIs & Services -> Credentials -> Create Credentials -> OAuth Client ID (Desktop)"
+            )
             click.echo("Redirect URI: http://localhost (InstalledAppFlow otomatik)")
             click.echo("Scopes: https://mail.google.com/")
             if not client_id:
-                client_id = click.prompt("OAuth Client ID", type=str, default=client_id or "").strip()
+                client_id = click.prompt(
+                    "OAuth Client ID", type=str, default=client_id or ""
+                ).strip()
             if not client_secret:
                 try:
                     client_secret = getpass.getpass("OAuth Client Secret (hidden): ").strip()
@@ -379,7 +406,9 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
             sys.exit(1)
 
         try:
-            refresh_token, access_token, expiry = run_gmail_oauth_flow(client_id, client_secret, email)
+            refresh_token, access_token, expiry = run_gmail_oauth_flow(
+                client_id, client_secret, email
+            )
             click.echo(f"+ OAuth başarılı: refresh_token alındı ({refresh_token[:8]}...)")
         except (OSError, ValueError, RuntimeError) as e:
             click.echo(f"- OAuth hatası: {_redact(str(e))}", err=True)
@@ -418,7 +447,9 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
         # Prefer file cache plus env
         token_file = settings.gmail_oauth_token_file or "cache/gmail_oauth.json"
         try:
-            save_gmail_oauth_token(token_file, email, refresh_token, client_id, client_secret, access_token, expiry)
+            save_gmail_oauth_token(
+                token_file, email, refresh_token, client_id, client_secret, access_token, expiry
+            )
             click.echo(f"Wrote OAuth token to {token_file} (600 perms)")
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("Failed to save to file: %s", e)
@@ -438,7 +469,9 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
                 else:
                     new_rts = refresh_token
             _upsert_env_file("GMAIL_OAUTH_REFRESH_TOKENS", new_rts)
-            click.echo(f"Wrote GMAIL_EMAILS and GMAIL_OAUTH_REFRESH_TOKENS to .env (appended {email})")
+            click.echo(
+                f"Wrote GMAIL_EMAILS and GMAIL_OAUTH_REFRESH_TOKENS to .env (appended {email})"
+            )
         elif existing_emails:
             # Update existing entry
             # Find index and replace
@@ -469,8 +502,12 @@ def auth_login(provider: str | None = None, method: str | None = None, email: st
                 _upsert_env_file("GMAIL_OAUTH_REFRESH_TOKEN", refresh_token)
                 click.echo("Wrote GMAIL_EMAIL and GMAIL_OAUTH_REFRESH_TOKEN to .env")
 
-        click.echo("OAuth tamamlandı. ENABLE_CERT_TR=true olduğundan emin olun, sonra: app sync --source cert-tr")
-        click.echo("Not: Access token otomatik yenilenecek (refresh_token saklandı). İptal için Google Hesabı > Güvenlik > Üçüncü taraf erişimi'nden kaldırın.")
+        click.echo(
+            "OAuth tamamlandı. ENABLE_CERT_TR=true olduğundan emin olun, sonra: app sync --source cert-tr"
+        )
+        click.echo(
+            "Not: Access token otomatik yenilenecek (refresh_token saklandı). İptal için Google Hesabı > Güvenlik > Üçüncü taraf erişimi'nden kaldırın."
+        )
         return
 
     click.echo(f"Bilinmeyen provider: {provider}", err=True)
@@ -509,7 +546,10 @@ def sync(source: str = "all") -> None:
     if need_github and not token:
         # If CERT-TR is enabled and user asked all, still allow cert-tr part to run
         if settings.enable_cert_tr and source == "all":
-            click.echo("Warning: GITHUB_TOKEN not set - GitHub sync will be skipped, CERT-TR only.", err=True)
+            click.echo(
+                "Warning: GITHUB_TOKEN not set - GitHub sync will be skipped, CERT-TR only.",
+                err=True,
+            )
             logger.warning("sync without GitHub token - GitHub skipped, CERT-TR only")
             need_github = False
         else:
@@ -592,10 +632,14 @@ def sync(source: str = "all") -> None:
                 combined_diag["errors"].extend(diag_ct.get("errors") or [])
                 if advs_ct:
                     all_advisories.extend(advs_ct)
-                    click.echo(f"CERT-TR sync OK - {len(advs_ct)} advisories from {diag_ct.get('accounts')} account(s) (raw {diag_ct.get('raw_fetched')})")
+                    click.echo(
+                        f"CERT-TR sync OK - {len(advs_ct)} advisories from {diag_ct.get('accounts')} account(s) (raw {diag_ct.get('raw_fetched')})"
+                    )
                     click.echo(f"Latest CERT-TR: {advs_ct[0].ghsa_id} - {advs_ct[0].summary[:80]}")
                 else:
-                    click.echo(f"CERT-TR sync: no advisories (raw {diag_ct.get('raw_fetched')}, filtered_sender {diag_ct.get('filtered_sender')})")
+                    click.echo(
+                        f"CERT-TR sync: no advisories (raw {diag_ct.get('raw_fetched')}, filtered_sender {diag_ct.get('filtered_sender')})"
+                    )
                     if diag_ct.get("errors"):
                         for e in diag_ct["errors"][:3]:
                             click.echo(f"  CERT-TR warn: {_redact(e)}", err=True)
@@ -613,7 +657,9 @@ def sync(source: str = "all") -> None:
         # --- Upsert combined ---
         if not all_advisories:
             # Check if both sources were skipped vs empty result
-            click.echo("No advisories from any source - cache unchanged. Check GITHUB_TOKEN / PROTON_* settings.")
+            click.echo(
+                "No advisories from any source - cache unchanged. Check GITHUB_TOKEN / PROTON_* settings."
+            )
             # Still mark success if no error (to update next sync)
             if not combined_diag["errors"]:
                 cache.mark_success(user=cache.get_meta("authenticated_user"))
@@ -640,10 +686,14 @@ def sync(source: str = "all") -> None:
             import json
 
             if combined_diag.get("cert_tr"):
-                cache.set_meta("cert_tr_diag", json.dumps(combined_diag["cert_tr"], ensure_ascii=False))
+                cache.set_meta(
+                    "cert_tr_diag", json.dumps(combined_diag["cert_tr"], ensure_ascii=False)
+                )
         except (OSError, ValueError, TypeError, RuntimeError) as e:
             logger.debug("Failed to persist cert_tr_diag: %s", e)
-        click.echo(f"Sync OK - {count} advisories upserted total ({len(all_advisories)} fetched before dedup)")
+        click.echo(
+            f"Sync OK - {count} advisories upserted total ({len(all_advisories)} fetched before dedup)"
+        )
         if combined_diag["errors"]:
             click.echo(f"Warnings ({len(combined_diag['errors'])}):", err=True)
             for e in combined_diag["errors"][:5]:
@@ -838,7 +888,7 @@ def serve(
                 except OSError as e:
                     logger.debug("stale pid cleanup failed: %s", _redact(str(e)))
         click.echo(
-            f"Daemonizing → pid: {pid_file}, log: {log_file} (terminal kapanınca da yaşar, nohup/setsid)"
+            f"Daemonizing - pid: {pid_file}, log: {log_file} (terminal kapanınca da yaşar, nohup/setsid)"
         )
         _daemonize(pid_file, log_file)
         # Child continues; stdout/stderr now goes to log file
@@ -977,7 +1027,9 @@ def _status() -> None:
     # Per-source breakdown
     try:
         all_adv = cache.load_all()
-        github_c = sum(1 for a in all_adv if (getattr(a, "source", "github") or "github") == "github")
+        github_c = sum(
+            1 for a in all_adv if (getattr(a, "source", "github") or "github") == "github"
+        )
         cert_c = sum(1 for a in all_adv if getattr(a, "source", "") == "cert-tr")
         click.echo(f"  - GitHub: {github_c}")
         click.echo(f"  - CERT-TR: {cert_c}")
@@ -999,9 +1051,13 @@ def _status() -> None:
         for a in accs:
             # Never show password
             prov = a.get("provider", "unknown")
-            click.echo(f"  - [{prov}] {a['email']} -> folder={a['folder']} host={a['host']}:{a['port']} sec={a['security']}")
+            click.echo(
+                f"  - [{prov}] {a['email']} -> folder={a['folder']} host={a['host']}:{a['port']} sec={a['security']}"
+            )
         click.echo(f"CERT-TR allowlist: {settings.cert_tr_sender_allowlist}")
-        click.echo(f"CERT-TR max mails: {settings.cert_tr_max_mails}  search_days: {settings.cert_tr_search_days or 'all'}")
+        click.echo(
+            f"CERT-TR max mails: {settings.cert_tr_max_mails}  search_days: {settings.cert_tr_search_days or 'all'}"
+        )
         diag_raw = cache.get_meta("cert_tr_diag")
         if diag_raw:
             click.echo(f"CERT-TR last diag: {diag_raw[:300]}")
