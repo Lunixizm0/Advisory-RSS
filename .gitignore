@@ -1,0 +1,48 @@
+# secrets
+.env
+.env.local
+
+# cache / db
+*.db
+*.sqlite
+*.sqlite3
+cache/
+data/
+.cache/
+
+# credentials
+credentials/
+*.pem
+*.key
+
+# logs
+logs/
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.envrc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# os
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+tests/fixtures/*
+uv.lock
