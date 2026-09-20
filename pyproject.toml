@@ -3,8 +3,8 @@ name = "advisory-rss"
 version = "0.2.0"
 description = "Security-first localhost-only service that lists GitHub Security Advisories created by the authenticated account as RSS 2.0 for Zen Browser"
 readme = "README.md"
-license = { text = "MIT" }
-authors = [{ name = "Advisory RSS" }]
+license = { text = "GPL-3.0" }
+authors = [{ name = "Lunixizm0" }]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115,<0.142",

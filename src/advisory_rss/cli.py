@@ -63,7 +63,7 @@ def cli() -> None:
 
 @cli.group()
 def auth() -> None:
-    #TODO
+    pass
 
 
 @auth.command("login")
