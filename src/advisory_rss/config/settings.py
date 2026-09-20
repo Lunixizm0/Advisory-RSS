@@ -23,6 +23,8 @@ from advisory_rss.config.constants import (
 )
 from advisory_rss.server.bind import validate_bind_address
 
+_UNSET = object()  # type: ignore[var-annotated]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -35,17 +37,19 @@ class Settings(BaseSettings):
 
     def __init__(
         self,
-        _env_file: str | Path | tuple[str | Path, ...] | list[str | Path] | None = None,
-        _env_file_encoding: str | None = None,
-        _secrets_dir: str | Path | None = None,
+        _env_file: str | Path | tuple[str | Path, ...] | list[str | Path] | None = _UNSET,  # type: ignore[assignment]
+        _env_file_encoding: str | None = _UNSET,  # type: ignore[assignment]
+        _secrets_dir: str | Path | None = _UNSET,  # type: ignore[assignment]
         **kwargs: Any,
     ) -> None:
-        super().__init__(
-            _env_file=_env_file,
-            _env_file_encoding=_env_file_encoding,
-            _secrets_dir=_secrets_dir,
-            **kwargs,
-        )
+        init_kwargs: dict[str, Any] = {}
+        if _env_file is not _UNSET:
+            init_kwargs["_env_file"] = _env_file
+        if _env_file_encoding is not _UNSET:
+            init_kwargs["_env_file_encoding"] = _env_file_encoding
+        if _secrets_dir is not _UNSET:
+            init_kwargs["_secrets_dir"] = _secrets_dir
+        super().__init__(**init_kwargs, **kwargs)
 
     # GitHub
     github_token: str | None = Field(default=None, validation_alias="GITHUB_TOKEN")
