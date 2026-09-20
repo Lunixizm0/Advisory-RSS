@@ -335,12 +335,14 @@ def create_app(
                     )
             except (OSError, ValueError, TypeError, RuntimeError) as e:
                 logger.debug("Failed to persist cert_tr_diag: %s", e)
+            # Log full diag server-side (with errors) but do not expose errors to client
             logger.info("POST /refresh ok: count=%d", count, extra={"diag": diag_comb})
+            safe_diag = {k: v for k, v in diag_comb.items() if k != "errors"}
             return JSONResponse(
                 content={
                     "status": "refreshed",
                     "count": count,
-                    "diag": {k: v for k, v in diag_comb.items() if k != "errors" or v},
+                    "diag": safe_diag,
                 }
             )
         except HTTPException:
