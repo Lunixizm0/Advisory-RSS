@@ -97,7 +97,7 @@ SKIP_FULL_SCAN=true   # optional: skip scanning all owned repos, only scan GITHU
 LOG_LEVEL=INFO app sync
 ```
 
-`FILTER_MODE` semantics (`PLAN.md:31`, `.env.example:22`):
+`FILTER_MODE` semantics, `.env.example:22`):
 
 - `author` **(default)** - only `advisory.author.login == your_login` (precise "created by me")
 - `author_or_publisher` - also matches `publisher.login`
