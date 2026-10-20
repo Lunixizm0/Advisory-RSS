@@ -11,7 +11,7 @@ sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
 sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/advisory_rss/__init__.py
 
 echo "Testler çalıştırılıyor..."
-uv run pytest tests/ -v
+uv run --extra dev pytest tests/ -v
 
 echo "Commit ediliyor..."
 git add pyproject.toml
