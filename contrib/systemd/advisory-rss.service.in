@@ -1,0 +1,33 @@
+[Unit]
+Description=Advisory-RSS - GitHub + CERT-TR advisories as a localhost RSS feed
+Documentation=file://@PROJECT_DIR@/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@PROJECT_DIR@
+ExecStart=@PROJECT_DIR@/.venv/bin/app serve
+Environment=PYTHONUNBUFFERED=1
+
+# .env / cache/advisories.db / cache/.advisory_rss.key are cwd-relative: keep WorkingDirectory.
+# Logs go to journald (stderr) and, when LOG_FILE is set in .env, also to cache/serve.log.
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=20s
+UMask=0077
+
+# Hardening (no extra privileges, no writable system paths)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=default.target

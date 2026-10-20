@@ -246,15 +246,30 @@ app stop --pid-file cache/advisory-rss.pid
 nohup app serve > cache/serve.log 2>&1 & disown
 # or
 tmux new -s rss "app serve"
-# or systemd user service (persistent)
-# ~/.config/systemd/user/advisory-rss.service:
-# [Unit] Description=Advisory RSS localhost-only
-# [Service] ExecStart=%h/Belgeler/Projeler/Advisory-RSS/.venv/bin/python -m advisory_rss.cli serve
-#           Restart=always
-#           Environment=GITHUB_TOKEN=ghp_...
-# [Install] WantedBy=default.target
-# systemctl --user daemon-reload && systemctl --user enable --now advisory-rss
+# or systemd user service (persistent) - see 8c
 ```
+
+### 8c. systemd user service (start at login)
+
+The repo ships a user-unit template (`contrib/systemd/advisory-rss.service.in`) and an installer:
+
+```bash
+./scripts/install-service.sh              # install -> ~/.config/systemd/user/, enable, start
+systemctl --user status advisory-rss      # unit state
+journalctl --user -u advisory-rss -f      # journald (stderr)
+tail -f cache/serve.log                   # rotating file log (LOG_FILE in .env)
+curl -s http://127.0.0.1:8765/health | jq
+./scripts/install-service.sh --uninstall  # stop, disable, remove
+```
+
+- The unit is written to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/advisory-rss.service` with the absolute repo path.
+- `WorkingDirectory` is **required**: `.env`, `cache/advisories.db`, `cache/.advisory_rss.key` and `cache/gmail_oauth.json` are cwd-relative, and `CACHE_PATH` must stay under the project directory.
+- `ExecStart` uses the project venv (`.venv/bin/app serve`). Re-run the installer after moving the repo or recreating the venv.
+- Starts at login (`WantedBy=default.target`). To run before login (boot): `loginctl enable-linger "$USER"` (may need `sudo`).
+- Logs go to journald **and** `cache/serve.log` when `LOG_FILE` is set in `.env` (the app installs a stderr stream handler plus the rotating file handler).
+- Do **not** run `app serve --daemon` at the same time; both bind `127.0.0.1:8765`. Stop the daemon first: `app stop`.
+- Proton Bridge is intentionally not a dependency of this unit. If you use it, start/autostart `protonmail-bridge.service` separately (GUI or `systemctl --user enable --now protonmail-bridge`).
+- Hardening matches the same-user, localhost-only model: `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, `UMask=0077`, restricted address families.
 
 Background behaviour: RSS reads cache only; a background task polls **both** sources every `REFRESH_INTERVAL`, uses `If-None-Match`/`ETag` for GitHub and `BODY.PEEK`/`readonly=True` for IMAP, and **keeps stale cache on transient errors** (requirement: feed stays available if GitHub/Gmail/Proton is down).
 
