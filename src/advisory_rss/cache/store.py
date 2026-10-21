@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     # Harden cache dir to 0700 when under project cache (mitigates clear-text at rest)

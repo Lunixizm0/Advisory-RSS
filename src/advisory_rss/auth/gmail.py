@@ -1,4 +1,4 @@
-#Gmail OAuth helpers
+# Gmail OAuth helpers
 
 from __future__ import annotations
 
@@ -96,9 +96,9 @@ def get_refresh_token_for_email(
     email: str,
     settings: Any,
 ) -> tuple[str | None, str | None, str | None]:
-    #Return (refresh_token, client_id, client_secret) for email.
-  #Checks env vars first (GMAIL_OAUTH_REFRESH_TOKEN etc), then file.
-    #For multi-account, checks GMAIL_OAUTH_REFRESH_TOKENS aligned with GMAIL_EMAILS.
+    # Return (refresh_token, client_id, client_secret) for email.
+    # Checks env vars first (GMAIL_OAUTH_REFRESH_TOKEN etc), then file.
+    # For multi-account, checks GMAIL_OAUTH_REFRESH_TOKENS aligned with GMAIL_EMAILS.
     # Check env single/multi
     # settings may have gmail_oauth_refresh_token(s) and client_id/secret
     try:
@@ -190,7 +190,7 @@ def fetch_access_token(
     client_secret: str,
     token_uri: str = GMAIL_OAUTH_TOKEN_URI,
 ) -> tuple[str, int | None]:
-    #Exchange refresh token for access token via Google OAuth2.
+    # Exchange refresh token for access token via Google OAuth2.
     if not refresh_token or not client_id or not client_secret:
         raise ValueError("Missing OAuth credentials (refresh_token/client_id/secret)")
 
@@ -229,12 +229,12 @@ def run_gmail_oauth_flow(
     client_secret: str,
     email: str | None = None,
 ) -> tuple[str, str, str | None]:
-    #Run InstalledAppFlow to obtain refresh token.
+    # Run InstalledAppFlow to obtain refresh token.
 
-    #Returns (refresh_token, access_token, expiry).
-    #Requires google-auth-oauthlib to be installed.
-    #Opens browser for user consent.
-    
+    # Returns (refresh_token, access_token, expiry).
+    # Requires google-auth-oauthlib to be installed.
+    # Opens browser for user consent.
+
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow
     except ImportError as e:

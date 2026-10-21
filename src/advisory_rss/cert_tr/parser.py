@@ -34,6 +34,7 @@ QUOTED_RE = re.compile(r"[“\"]([^”\"]{2,80})[”\"]")
 
 # Sender allowlist check is done outside but parser also extracts domain
 
+
 def decode_rfc2047(s: str | None) -> str:
     if not s:
         return ""
@@ -53,6 +54,7 @@ def decode_rfc2047(s: str | None) -> str:
         logger.debug("decode_rfc2047 failed %r: %s", s[:80], e)
         return str(s)
 
+
 def _extract_domain(from_header: str) -> str:
     # from_header already decoded may contain <addr>
     m = re.search(r"<([^>]+)>", from_header or "")
@@ -61,6 +63,7 @@ def _extract_domain(from_header: str) -> str:
     if "@" in addr:
         return addr.split("@", 1)[1].lower()
     return addr
+
 
 def _parse_date(date_str: str | None) -> datetime | None:
     if not date_str:
@@ -73,6 +76,7 @@ def _parse_date(date_str: str | None) -> datetime | None:
     except (ValueError, TypeError, AttributeError) as e:
         logger.debug("date parse failed %r: %s", date_str, e)
         return None
+
 
 def _html_to_text(html_body: str) -> str:
     # Lightweight html -> text: strip tags, decode entities, keep line breaks
@@ -96,6 +100,7 @@ def _html_to_text(html_body: str) -> str:
     s = re.sub(r"\n{3,}", "\n\n", s)
     s = re.sub(r" *\n *", "\n", s)
     return s.strip()
+
 
 def _extract_body(msg: EmailMessage) -> tuple[str, str | None]:
     # Walk parts; prefer html then plain; handle multipart
@@ -164,6 +169,7 @@ def _extract_body(msg: EmailMessage) -> tuple[str, str | None]:
             return _html_to_text(text), text
         return text, None
 
+
 def _extract_cves(text: str) -> list[str]:
     found = CVE_RE.findall(text or "")
     # normalize upper
@@ -177,9 +183,11 @@ def _extract_cves(text: str) -> list[str]:
             out.append(c)
     return out
 
+
 def _extract_cwe(text: str) -> str | None:
     m = CWE_RE.search(text or "")
     return m.group(0).upper() if m else None
+
 
 def _extract_product(text: str) -> str | None:
     if not text:
@@ -209,6 +217,7 @@ def _extract_product(text: str) -> str | None:
         return candidates[0].strip()
     return None
 
+
 def _build_summary(
     subject_decoded: str, product: str | None, cve: str | None, cwe: str | None
 ) -> str:
@@ -231,6 +240,7 @@ def _build_summary(
         if s:
             return s
     return subject_decoded.strip() or "CERT-TR Zafiyet Bildirimi"
+
 
 def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
     """Parse raw RFC822 bytes from Proton/Bridge or Gmail into NormalizedAdvisory.

@@ -86,7 +86,6 @@ def test_fetch_multi_account_distinct_folders():
 def test_gmail_host_allowed_and_proton_loopback():
     from advisory_rss.cert_tr.imap import ALLOWED_HOSTS, _is_host_allowed, connect_imap
 
-
     assert _is_host_allowed("imap.gmail.com")
     assert _is_host_allowed("127.0.0.1")
     assert ALLOWED_HOSTS.issuperset({"imap.gmail.com"})

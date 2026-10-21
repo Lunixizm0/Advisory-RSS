@@ -1,4 +1,4 @@
-#IMAP fetcher for CERT-TR mails via Proton Bridge and Gmail
+# IMAP fetcher for CERT-TR mails via Proton Bridge and Gmail
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ ALLOWED_HOSTS = {
     "imap.gmail.com",
     "imap.googlemail.com",
 }
+
 
 def _ssl_context_for_host(host: str) -> ssl.SSLContext:
     # Proton Bridge uses self-signed cert -> no verification
@@ -75,7 +76,12 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
         try:
             mail.starttls(ssl_context=ctx)
         except Exception as e:
-            logger.error("STARTTLS required but failed for %s:%s - aborting (no plaintext fallback): %s", host, port, e)
+            logger.error(
+                "STARTTLS required but failed for %s:%s - aborting (no plaintext fallback): %s",
+                host,
+                port,
+                e,
+            )
             # Ensure underlying socket is closed before propagating
             try:
                 mail.shutdown()
@@ -85,7 +91,9 @@ def connect_imap(account: dict[str, str]) -> imaplib.IMAP4:
                 mail.close()
             except Exception:  # noqa: BLE001, S110 - cleanup, ignore
                 pass
-            raise ValueError(f"STARTTLS failed for {host}:{port} - plaintext fallback disabled") from e
+            raise ValueError(
+                f"STARTTLS failed for {host}:{port} - plaintext fallback disabled"
+            ) from e
     else:  # NONE
         if host in {"imap.gmail.com", "imap.googlemail.com"}:
             raise ValueError(f"Plaintext IMAP not allowed for {host!r} - use SSL or STARTTLS")

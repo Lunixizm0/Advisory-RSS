@@ -137,7 +137,7 @@ def encrypt_dict(data: dict[str, Any], key_path: Path | str | None = None) -> st
 
 
 def decrypt_dict_text(text: str, key_path: Path | str | None = None) -> dict[str, Any] | None:
-    #Try to decrypt envelope produced by encrypt_dict. Returns dict or None if not encrypted
+    # Try to decrypt envelope produced by encrypt_dict. Returns dict or None if not encrypted
     if not text or not text.strip():
         return None
     try:

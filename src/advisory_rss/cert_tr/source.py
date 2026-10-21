@@ -1,4 +1,4 @@
-#CERT-TR source orchestrator: IMAP fetch -> parser -> NormalizedAdvisory list.
+# CERT-TR source orchestrator: IMAP fetch -> parser -> NormalizedAdvisory list.
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class CertTrSource:
         self.settings = settings
 
     def fetch_all(self) -> tuple[list[NormalizedAdvisory], dict[str, Any]]:
-        #Fetch from all configured Proton accounts.
+        # Fetch from all configured Proton accounts.
         diag: dict[str, Any] = {
             "accounts": 0,
             "raw_fetched": 0,
