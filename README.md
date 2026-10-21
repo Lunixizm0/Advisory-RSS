@@ -77,7 +77,7 @@ pip install -e .[dev]
 # verify
 app --help
 app auth login --help
-pytest -q   # 109 tests
+pytest -q   # 133 tests
 ruff check && pyright  # All checks passed!
 ```
 
@@ -246,6 +246,10 @@ you confirm   ->  state = published      (onay kaydı cache/advisories.db'de kal
 - "Onayı geri al" reverts an item back to `cve_assigned`.
 - The form is CSRF protected (per-advisory HMAC token + `Origin` check); the UI has no
   JavaScript and a strict CSP (`default-src 'none'; style-src 'self'`).
+- The advisory id in the URL is validated (`GHSA-xxxx-xxxx-xxxx` / `CERT-TR-CVE-YYYY-NNNN`);
+  anything else is a `404`. Log lines and redirect targets use the canonical id from the
+  cache only - no log injection, no open redirect (CodeQL `py/log-injection`,
+  `py/url-redirection`).
 - GitHub advisories are unaffected - their state comes from the GitHub API.
 - `ENABLE_WEB_UI=false` disables the HTML UI (the old JSON hint page is served instead).
 
@@ -481,7 +485,7 @@ Key invariants: RSS reads cache only; GH enumeration is exhaustive; IMAP never s
 ## Development & Tests
 
 ```bash
-pytest -q                     # 109 tests (60 original + 18 CERT-TR + 4 Gmail + web UI + threading)
+pytest -q                     # 133 tests (60 original + 18 CERT-TR + 4 Gmail + web UI + threading + id validation)
 pytest tests/unit -q -v
 pytest tests/integration -v   # starts ephemeral server on 127.0.0.1:0, validates RSS & headers
 pytest tests/unit/test_cert_tr_settings.py tests/unit/test_cert_tr_imap.py -v  # Gmail/Proton multi-folder, OAuth
