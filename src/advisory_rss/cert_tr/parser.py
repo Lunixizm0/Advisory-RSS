@@ -35,8 +35,6 @@ QUOTED_RE = re.compile(r"[“\"]([^”\"]{2,80})[”\"]")
 # Cap for the stored HTML body preview (full plain text is kept in description)
 HTML_BODY_MAX = 20000
 
-# Sender allowlist check is done outside but parser also extracts domain
-
 
 def decode_rfc2047(s: str | None) -> str:
     if not s:
@@ -369,9 +367,6 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
     if cwe:
         identifiers.append({"type": "CWE", "value": cwe})
 
-    # raw preservation (redacted password not in raw)
-    # NOTE: the CERT-TR "başvuru id" (case reference number) is NOT extracted -
-    # the mails do not carry it in a form we can parse reliably, so it stays empty.
     raw: dict[str, Any] = {
         "message_id": message_id,
         "subject": subject,

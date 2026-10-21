@@ -116,16 +116,13 @@ class CacheMeta:
 
 
 def is_cert_tr(adv: NormalizedAdvisory) -> bool:
-    """True when the advisory came from the CERT-TR mail source."""
+    # True when the advisory came from the CERT-TR mail source.
     return (getattr(adv, "source", "github") or "github") == "cert-tr"
 
 
 def effective_state(adv: NormalizedAdvisory, confirmed_ids: Collection[str] | None = None) -> str:
-    """Effective state for display and feed links.
-
-    CERT-TR items are only "published" after the user confirms them in the web UI
-    (a CVE ID allocation is not a publication).  GitHub items keep their API state.
-    """
+    # CERT-TR items are only "published" after the user confirms them in the web UI
+    # (a CVE ID allocation is not a publication).  GitHub items keep their API state.
     if is_cert_tr(adv):
         if confirmed_ids and adv.ghsa_id in confirmed_ids:
             return CERT_TR_STATE_PUBLISHED

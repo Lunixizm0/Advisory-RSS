@@ -1,9 +1,3 @@
-"""HTML rendering for the minimal web UI.
-
-Everything is escaped - mail bodies are attacker controlled (HTML mail from an
-external sender), so nothing from a mail is ever injected as markup.
-"""
-
 from __future__ import annotations
 
 import html

@@ -1,11 +1,3 @@
-"""FastAPI routes for the minimal web UI.
-
-The UI is cache-only (never calls GitHub/IMAP) and localhost-only, like the rest
-of the service.  The only write operation is "mark this CERT-TR advisory as
-published on NVD", which is protected with a per-advisory HMAC token and an
-Origin check (CSRF defence).
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -170,7 +162,6 @@ def build_detail_response(
 
 
 def register_ui_routes(app: FastAPI, settings: Settings, cache: CacheStore) -> None:
-    """Register the web UI routes on the given app."""
 
     @app.get("/ui/style.css", include_in_schema=False)
     async def ui_style() -> Response:
@@ -186,7 +177,6 @@ def register_ui_routes(app: FastAPI, settings: Settings, cache: CacheStore) -> N
 
     @app.get("/ui/feed", include_in_schema=False)
     async def ui_feed() -> RedirectResponse:
-        # "RSS'e yonlendir" - single entry point to the feed
         return RedirectResponse(url="/rss.xml", status_code=302)
 
     @app.get("/ui/a/{ghsa_id}", include_in_schema=False)

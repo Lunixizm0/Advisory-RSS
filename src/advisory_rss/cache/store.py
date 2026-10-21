@@ -137,9 +137,6 @@ class CacheStore:
                         logger.info("Cleaned up %d legacy CERT-TR non-CVE advisories", cur.rowcount)
                 except sqlite3.Error as ce:
                     logger.debug("Cleanup legacy advisories failed: %s", ce)
-                # Cleanup bogus CERT-TR mail metadata: an intermediate version guessed a
-                # "reference_no" (başvuru id) from the mail body and stored Proton's own
-                # internal id as a thread reference.  Both are removed here.
                 try:
                     cur = self._conn.execute(
                         "SELECT ghsa_id, raw_json, normalized_json FROM advisories "
@@ -388,12 +385,11 @@ class CacheStore:
         except sqlite3.Error:
             pass
 
-    # --- CERT-TR publication confirmations ---
+    # CERT-TR publication confirmations
     # A CERT-TR mail only means "a CVE ID was allocated".  The user confirms in
-    # the web UI that the advisory is actually published on NVD; until then the
+    # the web UI that the advisory is actually published on NVD. Until then the
     # item must not be presented as published and must not link to NVD.
     def confirm_publication(self, ghsa_id: str) -> str:
-        """Mark a CERT-TR advisory as published (user confirmed). Returns ISO timestamp."""
         now = datetime.now(UTC).isoformat()
         with _lock:
             try:
@@ -408,7 +404,6 @@ class CacheStore:
         return now
 
     def unconfirm_publication(self, ghsa_id: str) -> bool:
-        """Remove a publication confirmation. Returns True when a row was deleted."""
         with _lock:
             try:
                 cur = self._conn.execute(
@@ -430,7 +425,6 @@ class CacheStore:
                 return False
 
     def load_confirmations(self) -> dict[str, str]:
-        """Return {ghsa_id: confirmed_at_iso} for all confirmed CERT-TR advisories."""
         with _lock:
             try:
                 cur = self._conn.execute("SELECT ghsa_id, confirmed_at FROM cert_tr_publications")
@@ -439,7 +433,6 @@ class CacheStore:
                 return {}
 
     def load_confirmed_ids(self) -> set[str]:
-        """Return the set of confirmed ghsa_ids."""
         return set(self.load_confirmations().keys())
 
     # Helpers for status
