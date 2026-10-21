@@ -8,8 +8,10 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from advisory_rss.cache.models import CacheMeta, NormalizedAdvisory
+from advisory_rss.cert_tr.threading import is_internal_msg_id
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,10 @@ CREATE TABLE IF NOT EXISTS etags(
     etag TEXT,
     updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS cert_tr_publications(
+    ghsa_id TEXT PRIMARY KEY,
+    confirmed_at TEXT NOT NULL
+);
 """
 
 
@@ -131,6 +137,69 @@ class CacheStore:
                         logger.info("Cleaned up %d legacy CERT-TR non-CVE advisories", cur.rowcount)
                 except sqlite3.Error as ce:
                     logger.debug("Cleanup legacy advisories failed: %s", ce)
+                # Cleanup bogus CERT-TR mail metadata: an intermediate version guessed a
+                # "reference_no" (başvuru id) from the mail body and stored Proton's own
+                # internal id as a thread reference.  Both are removed here.
+                try:
+                    cur = self._conn.execute(
+                        "SELECT ghsa_id, raw_json, normalized_json FROM advisories "
+                        "WHERE source='cert-tr'"
+                    )
+
+                    def _clean_raw(raw: Any) -> bool:
+                        """Strip bogus keys from a CERT-TR raw dict. Returns True if changed."""
+                        if not isinstance(raw, dict):
+                            return False
+                        changed = False
+                        if "reference_no" in raw:
+                            raw.pop("reference_no", None)
+                            changed = True
+                        refs = raw.get("references")
+                        if isinstance(refs, list):
+                            keep = [r for r in refs if not is_internal_msg_id(str(r))]
+                            if len(keep) != len(refs):
+                                raw["references"] = keep
+                                changed = True
+                        return changed
+
+                    cleaned = 0
+                    for ghsa_id, rj, nj in cur.fetchall():
+                        try:
+                            raw = json.loads(rj)
+                        except (json.JSONDecodeError, ValueError, TypeError):
+                            raw = None
+                        try:
+                            norm = json.loads(nj)
+                        except (json.JSONDecodeError, ValueError, TypeError):
+                            norm = None
+                        changed = False
+                        if raw is not None and _clean_raw(raw):
+                            changed = True
+                        if isinstance(norm, dict):
+                            inner = norm.get("raw")
+                            if isinstance(inner, dict) and _clean_raw(inner):
+                                changed = True
+                        if not changed:
+                            continue
+                        params: list[Any] = []
+                        if raw is not None:
+                            params.append(json.dumps(raw, ensure_ascii=False))
+                        else:
+                            params.append(rj)
+                        if norm is not None:
+                            params.append(json.dumps(norm, ensure_ascii=False))
+                        else:
+                            params.append(nj)
+                        params.append(ghsa_id)
+                        self._conn.execute(
+                            "UPDATE advisories SET raw_json=?, normalized_json=? WHERE ghsa_id=?",
+                            tuple(params),
+                        )
+                        cleaned += 1
+                    if cleaned:
+                        logger.info("Cleaned up bogus CERT-TR mail metadata in %d rows", cleaned)
+                except sqlite3.Error as ce:
+                    logger.debug("Cleanup CERT-TR mail metadata failed: %s", ce)
             except sqlite3.Error as me:
                 logger.warning("Migration check failed: %s", me)
             logger.debug("cache schema ready db=%s", self.db_path)
@@ -318,6 +387,60 @@ class CacheStore:
             self._conn.close()
         except sqlite3.Error:
             pass
+
+    # --- CERT-TR publication confirmations ---
+    # A CERT-TR mail only means "a CVE ID was allocated".  The user confirms in
+    # the web UI that the advisory is actually published on NVD; until then the
+    # item must not be presented as published and must not link to NVD.
+    def confirm_publication(self, ghsa_id: str) -> str:
+        """Mark a CERT-TR advisory as published (user confirmed). Returns ISO timestamp."""
+        now = datetime.now(UTC).isoformat()
+        with _lock:
+            try:
+                self._conn.execute(
+                    "INSERT INTO cert_tr_publications(ghsa_id, confirmed_at) VALUES (?, ?) "
+                    "ON CONFLICT(ghsa_id) DO UPDATE SET confirmed_at=excluded.confirmed_at",
+                    (ghsa_id, now),
+                )
+                logger.info("CERT-TR publication confirmed ghsa_id=%s", ghsa_id)
+            except sqlite3.Error as e:
+                logger.warning("confirm_publication failed %s: %s", ghsa_id, e)
+        return now
+
+    def unconfirm_publication(self, ghsa_id: str) -> bool:
+        """Remove a publication confirmation. Returns True when a row was deleted."""
+        with _lock:
+            try:
+                cur = self._conn.execute(
+                    "DELETE FROM cert_tr_publications WHERE ghsa_id=?", (ghsa_id,)
+                )
+                return cur.rowcount > 0
+            except sqlite3.Error as e:
+                logger.warning("unconfirm_publication failed %s: %s", ghsa_id, e)
+                return False
+
+    def is_publication_confirmed(self, ghsa_id: str) -> bool:
+        with _lock:
+            try:
+                cur = self._conn.execute(
+                    "SELECT 1 FROM cert_tr_publications WHERE ghsa_id=?", (ghsa_id,)
+                )
+                return cur.fetchone() is not None
+            except sqlite3.Error:
+                return False
+
+    def load_confirmations(self) -> dict[str, str]:
+        """Return {ghsa_id: confirmed_at_iso} for all confirmed CERT-TR advisories."""
+        with _lock:
+            try:
+                cur = self._conn.execute("SELECT ghsa_id, confirmed_at FROM cert_tr_publications")
+                return {row[0]: row[1] for row in cur.fetchall()}
+            except sqlite3.Error:
+                return {}
+
+    def load_confirmed_ids(self) -> set[str]:
+        """Return the set of confirmed ghsa_ids."""
+        return set(self.load_confirmations().keys())
 
     # Helpers for status
     def mark_success(self, user: str | None = None) -> None:

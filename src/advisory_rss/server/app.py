@@ -21,6 +21,7 @@ from advisory_rss.config.settings import Settings, get_settings
 from advisory_rss.github.client import GitHubClient
 from advisory_rss.rss.builder import build_rss
 from advisory_rss.server.headers import SecurityHeadersMiddleware
+from advisory_rss.web.views import build_index_response, register_ui_routes
 
 logger = logging.getLogger(__name__)
 TOKEN_RE = _re.compile(TOKEN_REDACT_PATTERN)
@@ -109,20 +110,31 @@ def create_app(
     app.state.cache = cache
     app.state.bg_task = None
 
+    # Minimal web UI (cache only, no network calls)
+    if settings.enable_web_ui:
+        register_ui_routes(app, settings, cache)
+
     @app.get("/health")
     async def health() -> JSONResponse:
         meta = cache.get_cache_meta()
         # per-source counts
+        github_count = None
+        cert_tr_count = None
+        pending_count = None
         try:
             all_advs = cache.load_all()
             github_count = sum(
                 1 for a in all_advs if (getattr(a, "source", "github") or "github") == "github"
             )
             cert_tr_count = sum(1 for a in all_advs if getattr(a, "source", "") == "cert-tr")
+            confirmed_ids = cache.load_confirmed_ids()
+            pending_count = sum(
+                1
+                for a in all_advs
+                if getattr(a, "source", "") == "cert-tr" and a.ghsa_id not in confirmed_ids
+            )
         except (OSError, ValueError, RuntimeError, AttributeError) as e:
             logger.debug("Failed to load per-source counts: %s", e)
-            github_count = None
-            cert_tr_count = None
         # cert_tr diag
         cert_tr_diag = None
         try:
@@ -139,7 +151,9 @@ def create_app(
                 "advisories_count": meta.advisories_count,
                 "github_count": github_count,
                 "cert_tr_count": cert_tr_count,
+                "cert_tr_pending_count": pending_count,
                 "cert_tr_enabled": settings.enable_cert_tr,
+                "web_ui_enabled": settings.enable_web_ui,
                 "cert_tr_accounts": len(settings.get_cert_tr_accounts())
                 if settings.enable_cert_tr
                 else 0,
@@ -198,7 +212,10 @@ def create_app(
             feed_desc = f"Mixed feed: GitHub advisories by @{feed_user} + CERT-TR via Proton Mail"
         elif src_filter == "cert-tr":
             feed_title = "CERT-TR / Siber Güvenlik Başkanlığı Advisories"
-            feed_desc = "CERT-TR advisories via Proton Mail (siberguvenlik.gov.tr)"
+            feed_desc = (
+                "CERT-TR advisories via Proton Mail (siberguvenlik.gov.tr) - "
+                "CVE ID tahsisleri, NVD'de yayınlanmış olarak işaretlenene kadar öyle görünür"
+            )
         else:
             feed_title = f"GitHub Security Advisories - @{feed_user}"
             feed_desc = f"Security advisories created by {feed_user} (author={feed_user}) via GitHub API - localhost-only feed"
@@ -216,6 +233,8 @@ def create_app(
             max_items=settings.max_items,
             ttl_minutes=ttl_minutes,
             authenticated_user=feed_user,
+            confirmed_ids=cache.load_confirmed_ids(),
+            base_url=settings.base_url(),
         )
         return Response(
             content=xml.encode("utf-8"),
@@ -227,13 +246,16 @@ def create_app(
         )
 
     @app.get("/")
-    async def root() -> JSONResponse:
+    async def root(request: Request) -> Response:
+        # Minimal web UI (HTML) when enabled, JSON hint otherwise
+        if settings.enable_web_ui:
+            return build_index_response(request, cache)
         # Minimal hint, not directory listing
         return JSONResponse(
             content={
                 "message": "Advisory RSS - localhost-only. See /rss.xml and /health",
                 "rss": settings.rss_url(),
-                "health": f"http://{settings.effective_bind_address()}:{settings.port}/health",
+                "health": f"{settings.base_url()}/health",
             }
         )
 

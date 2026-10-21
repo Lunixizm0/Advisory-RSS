@@ -27,6 +27,71 @@ def test_cert_tr_parse_sample():
     assert "https://nvd.nist.gov/vuln/detail/CVE-2026-92083" in adv.references
 
 
+def test_cert_tr_state_is_cve_assigned_not_published():
+    # A CVE ID allocation is NOT a publication
+    adv = parse_cert_tr_email(_sample_email())
+    assert adv is not None
+    assert adv.state == "cve_assigned"
+
+
+def test_cert_tr_parser_extracts_thread_headers():
+    raw = (
+        b"From: cve@siberguvenlik.gov.tr\r\n"
+        b"To: test@example.com\r\n"
+        b"Subject: Zafiyet Bildiriminiz Hakkinda (CVE-2026-99999)\r\n"
+        b"Date: Tue, 15 Sep 2026 13:23:43 +0000\r\n"
+        b"Message-Id: <second@siberguvenlik.gov.tr>\r\n"
+        b"In-Reply-To: <first@siberguvenlik.gov.tr>\r\n"
+        b"References: <first@siberguvenlik.gov.tr> <second@siberguvenlik.gov.tr>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"CVE-2026-99999 kodu tahsis edilmistir.\r\n"
+    )
+    adv = parse_cert_tr_email(raw)
+    assert adv is not None
+    assert adv.raw["in_reply_to"] == "<first@siberguvenlik.gov.tr>"
+    assert adv.raw["references"] == [
+        "<first@siberguvenlik.gov.tr>",
+        "<second@siberguvenlik.gov.tr>",
+    ]
+
+
+def test_cert_tr_parser_ignores_proton_internal_ids():
+    raw = (
+        b"From: cve@siberguvenlik.gov.tr\r\n"
+        b"To: test@example.com\r\n"
+        b"Subject: Zafiyet Bildiriminiz Hakkinda (CVE-2026-77777)\r\n"
+        b"Date: Tue, 15 Sep 2026 13:23:43 +0000\r\n"
+        b"Message-Id: <real@siberguvenlik.gov.tr>\r\n"
+        b"References: <CH-abc==@protonmail.internalid>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"CVE-2026-77777 kodu tahsis edilmistir.\r\n"
+    )
+    adv = parse_cert_tr_email(raw)
+    assert adv is not None
+    # Proton's own internal id is not a thread reference
+    assert adv.raw["references"] == []
+    assert adv.raw["in_reply_to_ids"] == []
+
+
+def test_cert_tr_parser_does_not_invent_reference_no():
+    # The mails carry no parsable "başvuru id" - we must not invent one
+    raw = (
+        b"From: cve@siberguvenlik.gov.tr\r\n"
+        b"To: test@example.com\r\n"
+        b"Subject: Zafiyet Bildiriminiz Hakkinda (CVE-2026-88888)\r\n"
+        b"Date: Tue, 15 Sep 2026 13:23:43 +0000\r\n"
+        b"Message-Id: <ref@siberguvenlik.gov.tr>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"CVE-2026-88888 kodu tahsis edilmistir, ilan edilecektir.\r\n"
+    )
+    adv = parse_cert_tr_email(raw)
+    assert adv is not None
+    assert "reference_no" not in adv.raw
+
+
 def test_cert_tr_sender_allowlist():
     assert is_cert_tr_sender(
         "Ürün Güvenliği Koordinasyon Ekibi <cve@siberguvenlik.gov.tr>", ["siberguvenlik.gov.tr"]

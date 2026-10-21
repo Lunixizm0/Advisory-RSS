@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     # Optional hardening
     enable_refresh_endpoint: bool = Field(default=False, validation_alias="ENABLE_REFRESH_ENDPOINT")
     refresh_token: str | None = Field(default=None, validation_alias="REFRESH_TOKEN")
+    # Minimal web UI (server rendered HTML, cache only, localhost only)
+    enable_web_ui: bool = Field(default=True, validation_alias="ENABLE_WEB_UI")
 
     # Optional extra repos/orgs (comma-separated)
     github_repos: str | None = Field(default=None, validation_alias="GITHUB_REPOS")
@@ -854,7 +856,11 @@ class Settings(BaseSettings):
         return None
 
     def rss_url(self) -> str:
-        return f"http://{self.effective_bind_address()}:{self.port}/rss.xml"
+        return f"{self.base_url()}/rss.xml"
+
+    def base_url(self) -> str:
+        """Local origin of the service (used for links in the web UI / feed)."""
+        return f"http://{self.effective_bind_address()}:{self.port}"
 
     @property
     def resolved_cache_path(self) -> Path:

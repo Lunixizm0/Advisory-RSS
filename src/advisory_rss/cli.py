@@ -1143,8 +1143,15 @@ def _status() -> None:
             1 for a in all_adv if (getattr(a, "source", "github") or "github") == "github"
         )
         cert_c = sum(1 for a in all_adv if getattr(a, "source", "") == "cert-tr")
+        confirmed_ids = cache.load_confirmed_ids()
+        cert_pending_c = sum(
+            1
+            for a in all_adv
+            if getattr(a, "source", "") == "cert-tr" and a.ghsa_id not in confirmed_ids
+        )
         click.echo(f"  - GitHub: {github_c}")
         click.echo(f"  - CERT-TR: {cert_c}")
+        click.echo(f"    - yayınlanmamış (onay bekleyen): {cert_pending_c}")
     except (OSError, ValueError, RuntimeError) as e:
         logger.debug("Failed to load per-source breakdown: %s", e)
     click.echo(f"Last sync:      {meta.last_successful_sync or 'never'}")
@@ -1156,6 +1163,8 @@ def _status() -> None:
     click.echo(f"Filter mode:    {settings.filter_mode}")
     click.echo(f"Refresh interval: {settings.refresh_interval}s")
     click.echo(f"Max items (RSS): {settings.max_items}")
+    click.echo(f"Web UI enabled: {settings.enable_web_ui}")
+    click.echo(f"Web UI URL:    {settings.base_url()}/")
     click.echo(f"CERT-TR enabled: {settings.enable_cert_tr}")
     if settings.enable_cert_tr:
         accs = settings.get_cert_tr_accounts()

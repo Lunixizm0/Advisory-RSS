@@ -240,3 +240,65 @@ def test_rss_max_items_truncates():
     channel = root.find("channel")
     assert channel is not None
     assert len(channel.findall("item")) == 2
+
+
+def _cert_tr_adv() -> NormalizedAdvisory:
+    return NormalizedAdvisory(
+        ghsa_id="CERT-TR-CVE-2026-114350",
+        cve_id="CVE-2026-114350",
+        summary="pardus-update: CVE-2026-114350 (CWE-494)",
+        description="CVE ID tahsis edildi",
+        html_url="https://nvd.nist.gov/vuln/detail/CVE-2026-114350",
+        references=["https://nvd.nist.gov/vuln/detail/CVE-2026-114350"],
+        state="cve_assigned",
+        source="cert-tr",
+        updated_at=datetime(2026, 10, 21, 8, 44, tzinfo=UTC),
+    )
+
+
+def test_rss_unconfirmed_cert_tr_links_to_local_ui():
+    adv = _cert_tr_adv()
+    xml = build_rss(
+        [adv],
+        feed_title="t",
+        feed_link="https://a",
+        feed_description="d",
+        authenticated_user="u",
+        base_url="http://127.0.0.1:8765",
+    )
+    root = ET.fromstring(xml.encode("utf-8"))
+    item = root.find("channel/item")  # type: ignore[union-attr]
+    assert item is not None
+    link = item.find("link")
+    assert link is not None
+    # not published -> local page with the full mail, not the (dead) NVD entry
+    assert link.text == "http://127.0.0.1:8765/ui/a/CERT-TR-CVE-2026-114350"
+    title = item.find("title")
+    assert title is not None and "[YAYINLANMADI]" in (title.text or "")
+    cats = [c.text for c in item.findall("category")]
+    assert "nvd:pending" in cats
+    assert "state:cve_assigned" in cats
+
+
+def test_rss_confirmed_cert_tr_links_to_nvd():
+    adv = _cert_tr_adv()
+    xml = build_rss(
+        [adv],
+        feed_title="t",
+        feed_link="https://a",
+        feed_description="d",
+        authenticated_user="u",
+        base_url="http://127.0.0.1:8765",
+        confirmed_ids={"CERT-TR-CVE-2026-114350"},
+    )
+    root = ET.fromstring(xml.encode("utf-8"))
+    item = root.find("channel/item")  # type: ignore[union-attr]
+    assert item is not None
+    link = item.find("link")
+    assert link is not None
+    assert link.text == "https://nvd.nist.gov/vuln/detail/CVE-2026-114350"
+    title = item.find("title")
+    assert title is not None and "[YAYINLANMADI]" not in (title.text or "")
+    cats = [c.text for c in item.findall("category")]
+    assert "nvd:published" in cats
+    assert "state:published" in cats

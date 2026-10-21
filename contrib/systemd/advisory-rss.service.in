@@ -10,14 +10,13 @@ WorkingDirectory=@PROJECT_DIR@
 ExecStart=@PROJECT_DIR@/.venv/bin/app serve
 Environment=PYTHONUNBUFFERED=1
 
-# .env / cache/advisories.db / cache/.advisory_rss.key are cwd-relative: keep WorkingDirectory.
 # Logs go to journald (stderr) and, when LOG_FILE is set in .env, also to cache/serve.log.
 Restart=on-failure
 RestartSec=10s
 TimeoutStopSec=20s
 UMask=0077
 
-# Hardening (no extra privileges, no writable system paths)
+# Hardening
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full

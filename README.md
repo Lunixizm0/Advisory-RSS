@@ -13,24 +13,29 @@ flowchart LR
     GM --> NORM
 
     NORM --> RSS["RSS 2.0<br/>on 127.0.0.1"]
+    NORM --> UI["Web UI<br/>list + full mail<br/>publish confirm"]
     RSS --> ZEN["Zen Live Folder"]
+    UI --> RSS
 
     style GH fill:#24292f,stroke:#1f2328,color:#fff
     style PB fill:#6d28d9,stroke:#4c1d95,color:#fff
     style GM fill:#dc2626,stroke:#991b1b,color:#fff
     style NORM fill:#f59e0b,stroke:#92400e,color:#000
     style RSS fill:#0ea5e9,stroke:#0c4a6e,color:#fff
+    style UI fill:#db2777,stroke:#831843,color:#fff
     style ZEN fill:#059669,stroke:#064e3b,color:#fff
 ```
 
 **Endpoints:**
 
 ```
+http://127.0.0.1:PORT/                    # minimal web UI (HTML) - list + full mail + publish confirm
 http://127.0.0.1:PORT/rss.xml              # mixed (GitHub + CERT-TR)
 http://127.0.0.1:PORT/rss.xml?source=github
 http://127.0.0.1:PORT/rss.xml?source=cert-tr
+http://127.0.0.1:PORT/ui/a/{ghsa_id}      # detail page: full CERT-TR mail + publish state
+http://127.0.0.1:PORT/ui/feed             # 302 -> /rss.xml
 http://127.0.0.1:PORT/health               # per-source counts, cert_tr diag
-http://127.0.0.1:PORT/                     # hint
 ```
 
 ---
@@ -72,7 +77,7 @@ pip install -e .[dev]
 # verify
 app --help
 app auth login --help
-pytest -q   # 78 tests
+pytest -q   # 109 tests
 ruff check && pyright  # All checks passed!
 ```
 
@@ -205,13 +210,82 @@ http://127.0.0.1:8765/rss.xml?source=cert-tr
 
 Do not use HTTPS. Also, no auth on `/rss.xml` (Zen has no RSS auth). Mixed feed title: `Security Advisories (GitHub + CERT-TR) - @you`, per-source: `[CERT-TR] pardus-etap-settings: CVE-2026-92083 (CWE-862)`.
 
+---
+
+## 6b. Web UI - "CVE ID" is not "published"
+
+> **A CERT-TR mail only means a CVE ID was _allocated_.** It does **not** mean the
+> advisory is published on NVD. The service therefore never presents a CERT-TR
+> item as published until you confirm it.
+
+Open **`http://127.0.0.1:8765/`** (loopback only, no auth, cache-only reads):
+
+| Feature | Where |
+|---|---|
+| Advisory list (filter: Tümü / GitHub / CERT-TR / Onay bekleyen) | `/` |
+| Full mail (headers + body + original HTML), CVE/CWE, konuşma | `/ui/a/{ghsa_id}` |
+| **"NVD'de yayınlandı olarak işaretle"** button | detail page |
+| RSS feed link | header (`/rss.xml`, or `/ui/feed` redirect) |
+
+**Publication state machine**
+
+```
+CERT-TR mail  ->  state = cve_assigned   ("CVE ID tahsis - yayınlanmadı")
+                     RSS <link> -> http://127.0.0.1:8765/ui/a/CERT-TR-CVE-...
+                     RSS category: nvd:pending , state:cve_assigned
+                     title prefix: [CERT-TR][YAYINLANMADI]
+
+you confirm   ->  state = published      (onay kaydı cache/advisories.db'de kalıcı)
+                     RSS <link> -> https://nvd.nist.gov/vuln/detail/CVE-...
+                     RSS category: nvd:published , state:published
+                     title prefix: [CERT-TR]
+```
+
+- The confirmation is stored in the `cert_tr_publications` table of `cache/advisories.db`
+  and survives re-syncs and restarts (a re-sync never clears it).
+- "Onayı geri al" reverts an item back to `cve_assigned`.
+- The form is CSRF protected (per-advisory HMAC token + `Origin` check); the UI has no
+  JavaScript and a strict CSP (`default-src 'none'; style-src 'self'`).
+- GitHub advisories are unaffected - their state comes from the GitHub API.
+- `ENABLE_WEB_UI=false` disables the HTML UI (the old JSON hint page is served instead).
+
+> **Future (not implemented yet):** mails of the same case are not merged yet - see §6c.
+
+---
+
+## 6c. Konuşma gruplama (hazırlık)
+
+A CERT-TR case can produce several mails (CVE tahsisi -> CVE içeriği -> ilan -> düzeltme).
+The groundwork for merging them into one "konuşma" is already in place:
+
+| Piece | Where |
+|---|---|
+| Mail thread headers (`References`, `In-Reply-To`) parsed into `raw` | `src/advisory_rss/cert_tr/parser.py` |
+| Conversation key `<thread-root>\|<cve-set>` | `src/advisory_rss/cert_tr/threading.py` |
+| Grouping helper `group_by_conversation()` | `src/advisory_rss/cert_tr/threading.py` |
+
+Not extracted (and therefore **not** shown anywhere): the CERT-TR "başvuru id"
+(case reference number). The mails do not carry it in a reliably parsable form -
+any guess would be wrong, so the field is left empty until we see a real one.
+
+Also not done yet: the cache stores **one row per CVE** (`ghsa_id = CERT-TR-CVE-...`), so a
+follow-up mail about the same CVE currently *replaces* the previous one instead of being
+added to the conversation. Collecting them needs a message-level table (keyed by
+`Message-Id`) - a deliberate next step, since it also means storing the mail bodies.
+
+---
+
 ## 7. Adding the Feed to Zen Browser RSS Dynamic Folder
 
 1. Start the feed: `app serve` and verify `curl http://127.0.0.1:8765/rss.xml | head` returns `<rss version="2.0">`.
 2. Open Zen Browser - **Right Click - Live Folder - Add RSS Feed**
 3. Paste **`http://127.0.0.1:8765/rss.xml`** as the feed source. Leave protocol HTTP (not HTTPS).
-4. Save. Advisories appear sorted `updated_at DESC`, newest first. Withdrawn advisories remain with `[WITHDRAWN]` prefix - not deleted. CERT-TR items have `[CERT-TR]` prefix, NVD link, `source:cert-tr`/`cve:`/`cwe:` categories.
+4. Save. Advisories appear sorted `updated_at DESC`, newest first. Withdrawn advisories remain with `[WITHDRAWN]` prefix - not deleted. CERT-TR items have `[CERT-TR]` prefix, `source:cert-tr`/`cve:`/`cwe:` categories.
 5. If Zen shows empty folder: `curl http://127.0.0.1:8765/health | jq .advisories_count,.github_count,.cert_tr_count` should be >0; if 0, re-run `app sync` and check `app status` for rate-limit/auth errors.
+
+> CERT-TR items are linked to the **local** detail page while they are not published yet
+> (see §6b) - the NVD entry does not exist at that point. After you confirm the publication
+> in the web UI, the feed link switches to `https://nvd.nist.gov/vuln/detail/CVE-...`.
 
 ---
 
@@ -341,6 +415,8 @@ flowchart TD
     CACHE["upsert — cache/advisories.db<br/>SQLite WAL, source column, ETag map, MSG cleanup"]
     LOOP["background_refresh_loop<br/>asyncio every REFRESH_INTERVAL<br/>stale kept on error"]
     REQ["RSS request<br/>cache only — ?source= filter"]
+    UI["web UI /<br/>/ui/a/{id}<br/>cache only — publish confirm"]
+    CONF["cert_tr_publications<br/>user confirms 'published on NVD'"]
     FEED["GET http://127.0.0.1:8765/rss.xml<br/>builder: [CERT-TR] / [HIGH]<br/>source:cert-tr / github, cve: / cwe: categories"]
     ZEN["Zen Browser<br/>RSS Dynamic Folder"]
 
@@ -349,6 +425,10 @@ flowchart TD
     AGG --> CACHE
     CACHE --> LOOP
     CACHE --> REQ
+    CACHE --> UI
+    CONF --> REQ
+    CONF --> UI
+    UI --> CONF
     LOOP -. poll & upsert .-> CACHE
     REQ --> FEED --> ZEN
 
@@ -358,11 +438,13 @@ flowchart TD
     style CACHE fill:#eab308,stroke:#713f12,color:#000
     style LOOP fill:#6366f1,stroke:#312e81,color:#fff
     style REQ fill:#06b6d4,stroke:#164e63,color:#fff
+    style UI fill:#db2777,stroke:#831843,color:#fff
+    style CONF fill:#db2777,stroke:#831843,color:#fff
     style FEED fill:#0ea5e9,stroke:#0c4a6e,color:#fff
     style ZEN fill:#059669,stroke:#064e3b,color:#fff
 ```
 
-Key invariants: RSS reads cache only; GH enumeration is exhaustive; IMAP never sets `\Seen`; failures keep stale cache; `CERT-TR` strict CVE-only (hash fallback removed).
+Key invariants: RSS reads cache only; GH enumeration is exhaustive; IMAP never sets `\Seen`; failures keep stale cache; `CERT-TR` strict CVE-only (hash fallback removed); a CERT-TR CVE ID is **not** published until confirmed in the web UI.
 
 ---
 
@@ -387,6 +469,8 @@ Key invariants: RSS reads cache only; GH enumeration is exhaustive; IMAP never s
 - **Global enrichment 404 for draft/private** - expected; we treat missing as not-enriched.
 - **Withdrawn state** differs between global (`withdrawn_at`/`is_withdrawn`) and repo (`state: closed/withdrawn` + `withdrawn_at`) - normalized into single `withdrawn_at`/`state`.
 - **CERT-TR IMAP `FROM` search is substring** - `FROM "siberguvenlik.gov.tr"` is server-side substring, but final `is_cert_tr_sender()` `src/advisory_rss/cert_tr/parser.py:429` does strict domain check; non-CVE mails are now skipped entirely.
+- **CERT-TR mail != published advisory** - a mail only means a CVE ID was allocated; the item is shown as `cve_assigned` and linked to the local UI until the user confirms the NVD publication (§6b).
+- **One cache row per CVE, not per mail** - follow-up mails of the same case replace the previous row, so conversations are not collected yet (§6c).
 - **Gmail/Proton folders with non-ASCII** (e.g., `CVE Yazışmaları`) require `modified UTF-7` fallback `src/advisory_rss/cert_tr/imap.py:24`; `GMAIL_IMAP_FOLDERS` must be comma-separated (spaces preserved), not whitespace-split.
 - **Gmail OAuth `refresh_token` only on first consent** - if `run_gmail_oauth_flow` `src/advisory_rss/auth/gmail.py:210` returns no `refresh_token`, revoke access at <https://myaccount.google.com/permissions> and retry with `prompt=consent`.
 - **Proton Bridge self-signed cert** - `CERT_NONE` + `STARTTLS` (or `SSL`); Gmail uses `CERT_REQUIRED`.
@@ -397,10 +481,11 @@ Key invariants: RSS reads cache only; GH enumeration is exhaustive; IMAP never s
 ## Development & Tests
 
 ```bash
-pytest -q                     # 78 tests (60 original + 14 CERT-TR + 4 Gmail)
+pytest -q                     # 109 tests (60 original + 18 CERT-TR + 4 Gmail + web UI + threading)
 pytest tests/unit -q -v
 pytest tests/integration -v   # starts ephemeral server on 127.0.0.1:0, validates RSS & headers
 pytest tests/unit/test_cert_tr_settings.py tests/unit/test_cert_tr_imap.py -v  # Gmail/Proton multi-folder, OAuth
+pytest tests/unit/test_web_ui.py -v  # web UI, full mail view, publish confirmation
 pip-audit                     # audit scan
 
 # Regenerate real fixtures from live GitHub API (uses GITHUB_TOKEN from .env, auto-detects GITHUB_REPOS/GITHUB_ORG/SKIP_FULL_SCAN)

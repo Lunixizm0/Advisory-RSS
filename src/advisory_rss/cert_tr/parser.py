@@ -21,7 +21,8 @@ from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 from typing import Any
 
-from advisory_rss.cache.models import NormalizedAdvisory
+from advisory_rss.cache.models import CERT_TR_STATE_ASSIGNED, NormalizedAdvisory
+from advisory_rss.cert_tr.threading import extract_message_ids
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
 PRODUCT_RE = re.compile(r"[“\"']([^”\"']{2,80})[”\"']\s*ürün", re.IGNORECASE)
 # fallback: quoted strings list
 QUOTED_RE = re.compile(r"[“\"]([^”\"]{2,80})[”\"]")
+# Cap for the stored HTML body preview (full plain text is kept in description)
+HTML_BODY_MAX = 20000
 
 # Sender allowlist check is done outside but parser also extracts domain
 
@@ -267,6 +270,11 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
         message_id = (msg.get("X-Pm-External-Id") or "").strip()
     date_hdr = msg.get("Date") or msg.get("X-Pm-Date") or ""
     date_dt = _parse_date(str(date_hdr))
+    # Thread headers - used later to group follow-up mails into conversations
+    in_reply_to = decode_rfc2047(str(msg.get("In-Reply-To") or "")).strip()
+    references_hdr = decode_rfc2047(str(msg.get("References") or "")).strip()
+    in_reply_to_ids = extract_message_ids(in_reply_to)
+    reference_ids = extract_message_ids(references_hdr)
 
     # Body
     plain_text, html_raw = _extract_body(msg)
@@ -337,8 +345,9 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
     package_ecosystem = None
     package_name = product
 
-    # State: CERT-TR mails are allocations; consider "published" but note awaiting patch
-    state = "published"
+    # State: a CERT-TR mail means "CVE ID allocated", NOT "published".
+    # The item only becomes published after the user confirms it in the web UI.
+    state = CERT_TR_STATE_ASSIGNED
 
     # Updated/published = date
     published_at = date_dt
@@ -361,16 +370,21 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
         identifiers.append({"type": "CWE", "value": cwe})
 
     # raw preservation (redacted password not in raw)
+    # NOTE: the CERT-TR "başvuru id" (case reference number) is NOT extracted -
+    # the mails do not carry it in a form we can parse reliably, so it stays empty.
     raw: dict[str, Any] = {
         "message_id": message_id,
         "subject": subject,
         "from": from_decoded,
         "reply_to": reply_to,
         "date": str(date_hdr),
+        "in_reply_to": in_reply_to,
+        "in_reply_to_ids": in_reply_to_ids,
+        "references": reference_ids,
         "cves": cves,
         "cwe": cwe,
         "product": product,
-        "html_raw_snippet": (html_raw[:2000] if html_raw else "")[:2000],
+        "html_raw_snippet": (html_raw[:HTML_BODY_MAX] if html_raw else ""),
         "plain_snippet": plain_text[:2000],
         "x_pm_external_id": str(msg.get("X-Pm-External-Id") or ""),
         "x_pm_internal_id": str(msg.get("X-Pm-Internal-Id") or ""),

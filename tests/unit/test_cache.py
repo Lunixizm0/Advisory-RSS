@@ -96,3 +96,55 @@ def test_cache_stale_remains_on_error(tmp_path):
     assert store.count() == 1
     assert store.get_meta("last_error") == "network failure"
     store.close()
+
+
+def test_cache_migration_cleans_bogus_cert_tr_metadata(tmp_path):
+    db = tmp_path / "mig.db"
+    store = CacheStore(db)
+    adv = NormalizedAdvisory(
+        ghsa_id="CERT-TR-CVE-2026-1",
+        summary="s",
+        source="cert-tr",
+        raw={
+            "reference_no": "edilecektir",
+            "references": ["<CH-abc==@protonmail.internalid>"],
+            "cves": ["CVE-2026-1"],
+        },
+    )
+    store.upsert_advisories([adv])
+    store.close()
+
+    # reopening runs the migration
+    store2 = CacheStore(db)
+    loaded = store2.load_all()[0]
+    assert "reference_no" not in loaded.raw
+    assert loaded.raw["references"] == []
+    store2.close()
+
+
+def test_cache_publication_confirmation(tmp_path):
+
+    db = tmp_path / "p.db"
+    store = CacheStore(db)
+    store.upsert_advisories([make_adv("CERT-TR-CVE-2026-1")])
+    assert store.is_publication_confirmed("CERT-TR-CVE-2026-1") is False
+    assert store.load_confirmed_ids() == set()
+
+    ts = store.confirm_publication("CERT-TR-CVE-2026-1")
+    assert ts
+    assert store.is_publication_confirmed("CERT-TR-CVE-2026-1") is True
+    assert store.load_confirmed_ids() == {"CERT-TR-CVE-2026-1"}
+    assert store.load_confirmations()["CERT-TR-CVE-2026-1"] == ts
+
+    # survives re-sync (upsert does not touch confirmations)
+    store.upsert_advisories([make_adv("CERT-TR-CVE-2026-1")])
+    assert store.is_publication_confirmed("CERT-TR-CVE-2026-1") is True
+
+    # and survives a restart
+    store.close()
+    store2 = CacheStore(db)
+    assert store2.is_publication_confirmed("CERT-TR-CVE-2026-1") is True
+    assert store2.unconfirm_publication("CERT-TR-CVE-2026-1") is True
+    assert store2.is_publication_confirmed("CERT-TR-CVE-2026-1") is False
+    assert store2.unconfirm_publication("CERT-TR-CVE-2026-1") is False
+    store2.close()

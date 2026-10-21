@@ -6,8 +6,13 @@ import html
 import logging
 from datetime import UTC, datetime
 from email.utils import format_datetime
+from urllib.parse import quote
 
-from advisory_rss.cache.models import NormalizedAdvisory
+from advisory_rss.cache.models import (
+    NormalizedAdvisory,
+    effective_state,
+    is_cert_tr,
+)
 from advisory_rss.config.constants import RSS_MAX_BYTES
 from advisory_rss.rss.xml_util import cdata_wrap, escape_text
 
@@ -59,16 +64,37 @@ def _is_safe_url(url: str) -> bool:
     return u.startswith(("http://", "https://"))
 
 
-def _build_item_xml(adv: NormalizedAdvisory) -> str:
+def _nvd_url(adv: NormalizedAdvisory) -> str:
+    if adv.cve_id:
+        return f"https://nvd.nist.gov/vuln/detail/{adv.cve_id}"
+    return "https://siberguvenlik.gov.tr"
+
+
+def _local_detail_url(adv: NormalizedAdvisory, base_url: str) -> str:
+    """Local web UI page showing the full mail (used while not published on NVD)."""
+    if not base_url:
+        return ""
+    return f"{base_url.rstrip('/')}/ui/a/{quote(adv.ghsa_id, safe='')}"
+
+
+def _build_item_xml(
+    adv: NormalizedAdvisory,
+    confirmed_ids: set[str] | None = None,
+    base_url: str = "",
+) -> str:
     # Title logic
     severity = _severity_label(adv.severity)
     is_withdrawn = bool(adv.withdrawn_at) or adv.state.lower() == "withdrawn"
     src = getattr(adv, "source", "github") or "github"
+    confirmed = adv.ghsa_id in (confirmed_ids or set())
+    cert_tr = src == "cert-tr"
+    state = effective_state(adv, confirmed_ids)
     prefix = ""
     if is_withdrawn:
         prefix = "[WITHDRAWN] "
-    elif src == "cert-tr":
-        prefix = "[CERT-TR] "
+    elif cert_tr:
+        # CVE ID allocation != publication - mark it in the title until confirmed
+        prefix = "[CERT-TR] " if confirmed else "[CERT-TR][YAYINLANMADI] "
     elif severity not in ("unknown", "n/a"):
         prefix = f"[{severity.upper()}] "
     base_title = adv.summary.strip() or adv.ghsa_id
@@ -76,14 +102,13 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
     title_esc = escape_text(title)
 
     raw_link = adv.html_url.strip() if adv.html_url else ""
-    if src == "cert-tr":
-        # fallback to NVD or siberguvenlik portal if not safe
-        fallback = (
-            f"https://nvd.nist.gov/vuln/detail/{adv.cve_id}"
-            if adv.cve_id
-            else "https://siberguvenlik.gov.tr"
-        )
-        link = raw_link if _is_safe_url(raw_link) else fallback
+    if cert_tr:
+        if confirmed:
+            link = raw_link if _is_safe_url(raw_link) else _nvd_url(adv)
+        else:
+            # Not published on NVD yet -> point to the local page with the full mail
+            local = _local_detail_url(adv, base_url)
+            link = local or _nvd_url(adv)
     else:
         link = (
             raw_link if _is_safe_url(raw_link) else f"https://github.com/advisories/{adv.ghsa_id}"
@@ -107,7 +132,11 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
         cats.append(f"package:{adv.package_name}")
     if is_withdrawn:
         cats.append("withdrawn")
-    if adv.state:
+    if cert_tr:
+        # single effective state for CERT-TR (cve_assigned / published) + publication marker
+        cats.append(f"state:{state}")
+        cats.append("nvd:published" if confirmed else "nvd:pending")
+    elif adv.state:
         cats.append(f"state:{adv.state}")
     # also cve if present
     if adv.cve_id:
@@ -126,8 +155,8 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
 
     # Description: build HTML summary + metadata table
     # Keep bounded: truncate description if huge
-    desc_html = _build_description_html(adv)
-    content_html = _build_content_html(adv)
+    desc_html = _build_description_html(adv, confirmed_ids, base_url)
+    content_html = _build_content_html(adv, confirmed_ids, base_url)
 
     # Use CDATA for description/content so HTML is preserved but safely escaped via cdata_wrap
     desc_cdata = cdata_wrap(desc_html)
@@ -146,7 +175,26 @@ def _build_item_xml(adv: NormalizedAdvisory) -> str:
     </item>"""
 
 
-def _build_description_html(adv: NormalizedAdvisory) -> str:
+def _cert_tr_status_html(adv: NormalizedAdvisory, confirmed_ids: set[str] | None) -> str:
+    """Status line for CERT-TR items (CVE ID allocation vs published on NVD)."""
+    confirmed = adv.ghsa_id in (confirmed_ids or set())
+    if confirmed:
+        return (
+            "<p><em>Durum:</em> NVD'de yayınlandı (kullanıcı onayı) "
+            '&nbsp; <em>NVD:</em> <a href="https://nvd.nist.gov/vuln/detail/'
+            f'{html.escape(adv.cve_id or "")}">NVD kaydı</a></p>'
+        )
+    return (
+        "<p><em>Durum:</em> CVE ID tahsis edildi, NVD'de <strong>yayınlanmadı</strong>. "
+        "Bu kaydın yayınlanıp yayınlanmadığını doğrulamak için web arayüzünü kullanın.</p>"
+    )
+
+
+def _build_description_html(
+    adv: NormalizedAdvisory,
+    confirmed_ids: set[str] | None = None,
+    base_url: str = "",
+) -> str:
     parts: list[str] = []
     # summary
     if adv.summary:
@@ -154,11 +202,17 @@ def _build_description_html(adv: NormalizedAdvisory) -> str:
     # severity
     sev = _severity_label(adv.severity)
     parts.append(
-        f"<p><em>Severity:</em> {html.escape(sev)} &nbsp; <em>State:</em> {html.escape(adv.state)} &nbsp; <em>GHSA:</em> {html.escape(adv.ghsa_id)}"
+        f"<p><em>Severity:</em> {html.escape(sev)} &nbsp; <em>State:</em> {html.escape(effective_state(adv, confirmed_ids))} &nbsp; <em>GHSA:</em> {html.escape(adv.ghsa_id)}"
     )
     if adv.cve_id:
         parts[-1] += f" &nbsp; <em>CVE:</em> {html.escape(adv.cve_id)}"
     parts[-1] += "</p>"
+
+    if is_cert_tr(adv):
+        parts.append(_cert_tr_status_html(adv, confirmed_ids))
+        local = _local_detail_url(adv, base_url)
+        if local:
+            parts.append(f'<p><a href="{html.escape(local)}">Tam maili görüntüle (yerel)</a></p>')
 
     if adv.package_name or adv.package_ecosystem:
         eco = html.escape(adv.package_ecosystem or "")
@@ -199,6 +253,9 @@ def _build_description_html(adv: NormalizedAdvisory) -> str:
     # references small - only http/https allowed
     if adv.references:
         safe_refs = [r for r in adv.references[:5] if _is_safe_url(r)]
+        if is_cert_tr(adv) and adv.ghsa_id not in (confirmed_ids or set()):
+            # NVD entry does not exist yet -> do not advertise a dead link
+            safe_refs = [r for r in safe_refs if "nvd.nist.gov" not in r]
         refs_html = "".join(
             f'<li><a href="{html.escape(r)}">{html.escape(r)}</a></li>' for r in safe_refs
         )
@@ -212,7 +269,12 @@ def _build_description_html(adv: NormalizedAdvisory) -> str:
     return combined
 
 
-def _build_content_html(adv: NormalizedAdvisory) -> str:
+def _build_content_html(
+    adv: NormalizedAdvisory,
+    confirmed_ids: set[str] | None = None,
+    base_url: str = "",
+) -> str:
+    confirmed = adv.ghsa_id in (confirmed_ids or set())
     parts: list[str] = []
     parts.append(f"<h2>{html.escape(adv.summary)}</h2>")
     parts.append("<table>")
@@ -220,7 +282,9 @@ def _build_content_html(adv: NormalizedAdvisory) -> str:
     if adv.cve_id:
         parts.append(f"<tr><th>CVE</th><td>{html.escape(adv.cve_id)}</td></tr>")
     parts.append(f"<tr><th>Severity</th><td>{html.escape(_severity_label(adv.severity))}</td></tr>")
-    parts.append(f"<tr><th>State</th><td>{html.escape(adv.state)}</td></tr>")
+    parts.append(
+        f"<tr><th>State</th><td>{html.escape(effective_state(adv, confirmed_ids))}</td></tr>"
+    )
     if adv.package_ecosystem:
         parts.append(f"<tr><th>Ecosystem</th><td>{html.escape(adv.package_ecosystem)}</td></tr>")
     if adv.package_name:
@@ -249,21 +313,34 @@ def _build_content_html(adv: NormalizedAdvisory) -> str:
         )
     parts.append("</table>")
 
+    if is_cert_tr(adv):
+        parts.append(_cert_tr_status_html(adv, confirmed_ids))
+
     if adv.description:
         desc_esc = html.escape(adv.description).replace("\n", "<br/>")
         parts.append(f"<div>{desc_esc}</div>")
 
     if adv.references:
         parts.append("<h3>References</h3><ul>")
-        for r in adv.references:
+        refs = list(adv.references)
+        if is_cert_tr(adv) and not confirmed:
+            refs = [r for r in refs if "nvd.nist.gov" not in r]
+        for r in refs:
             if not _is_safe_url(r):
                 continue
             er = html.escape(r)
             parts.append(f'<li><a href="{er}">{er}</a></li>')
         parts.append("</ul>")
 
-    view_link = adv.html_url if _is_safe_url(adv.html_url) else "#"
-    label = "View NVD entry" if getattr(adv, "source", "github") == "cert-tr" else "View on GitHub"
+    if is_cert_tr(adv):
+        local = _local_detail_url(adv, base_url)
+        if local:
+            parts.append(f'<p><a href="{html.escape(local)}">Tam maili görüntüle (yerel)</a></p>')
+        view_link = _nvd_url(adv) if confirmed else "#"
+        label = "NVD kaydını aç" if confirmed else "NVD kaydı (henüz yayınlanmadı)"
+    else:
+        view_link = adv.html_url if _is_safe_url(adv.html_url) else "#"
+        label = "View on GitHub"
     parts.append(f'<p><a href="{html.escape(view_link)}">{label}</a></p>')
     # source footer
     src = getattr(adv, "source", "github") or "github"
@@ -288,7 +365,15 @@ def build_rss(
     max_items: int = 1000,
     ttl_minutes: int = 10,
     authenticated_user: str | None = None,
+    confirmed_ids: set[str] | None = None,
+    base_url: str = "",
 ) -> str:
+    """Build the RSS 2.0 document.
+
+    ``confirmed_ids`` holds the CERT-TR advisories the user confirmed as published
+    on NVD; ``base_url`` is the local origin used to link unconfirmed items to the
+    web UI page showing the full mail.
+    """
     logger.debug(
         "build_rss start advisories=%d max_items=%s ttl=%d user=%s",
         len(advisories),
@@ -323,7 +408,7 @@ def build_rss(
     )
     lang = "en-us"
 
-    items_xml = "\n".join(_build_item_xml(a) for a in sorted_adv)
+    items_xml = "\n".join(_build_item_xml(a, confirmed_ids, base_url) for a in sorted_adv)
 
     # Namespaces for dc and content
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -355,7 +440,7 @@ def build_rss(
         while lo <= hi:
             mid = (lo + hi) // 2
             cand = sorted_adv[:mid]
-            cand_items = "\n".join(_build_item_xml(a) for a in cand)
+            cand_items = "\n".join(_build_item_xml(a, confirmed_ids, base_url) for a in cand)
             cand_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
   <channel>

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+
+# CERT-TR mails are CVE *allocation* notices: a CVE ID existing does NOT mean the
+# advisory is published.  These states model that distinction:
+CERT_TR_STATE_ASSIGNED = "cve_assigned"  # CVE ID allocated, not published on NVD
+CERT_TR_STATE_PUBLISHED = "published"  # user confirmed it is published on NVD
 
 
 @dataclass
@@ -107,3 +113,21 @@ class CacheMeta:
     rate_limited_until: str | None = None
     last_error: str | None = None
     authenticated_user: str | None = None
+
+
+def is_cert_tr(adv: NormalizedAdvisory) -> bool:
+    """True when the advisory came from the CERT-TR mail source."""
+    return (getattr(adv, "source", "github") or "github") == "cert-tr"
+
+
+def effective_state(adv: NormalizedAdvisory, confirmed_ids: Collection[str] | None = None) -> str:
+    """Effective state for display and feed links.
+
+    CERT-TR items are only "published" after the user confirms them in the web UI
+    (a CVE ID allocation is not a publication).  GitHub items keep their API state.
+    """
+    if is_cert_tr(adv):
+        if confirmed_ids and adv.ghsa_id in confirmed_ids:
+            return CERT_TR_STATE_PUBLISHED
+        return CERT_TR_STATE_ASSIGNED
+    return adv.state
