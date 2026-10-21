@@ -95,7 +95,8 @@ def _fmt_dt(dt: datetime | None) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def _detail_url(ghsa_id: str) -> str:
+def detail_url(ghsa_id: str) -> str:
+    """Canonical detail page URL for an advisory id (percent-encoded)."""
     return f"/ui/a/{quote(ghsa_id, safe='')}"
 
 
@@ -172,7 +173,7 @@ def render_index(
         rows.append(
             "<tr>"
             f"<td>{_source_badge(adv)}<br>{_state_badge(adv, confirmed_ids)}</td>"
-            f'<td><a href="{esc(_detail_url(adv.ghsa_id))}">{esc(adv.summary or adv.ghsa_id)}</a>'
+            f'<td><a href="{esc(detail_url(adv.ghsa_id))}">{esc(adv.summary or adv.ghsa_id)}</a>'
             f'<div class="muted">{esc(adv.ghsa_id)}</div></td>'
             f"<td>{esc(cve)}</td>"
             f"<td>{esc(package)}</td>"
@@ -228,7 +229,7 @@ def render_detail(
 <p>
 <a href="https://nvd.nist.gov/vuln/detail/{esc(adv.cve_id or "")}">NVD kayd&#305;n&#305; a&#351;</a>
 &nbsp;&middot;&nbsp;
-<form method="post" action="{esc(_detail_url(adv.ghsa_id))}/confirm" style="display:inline">
+<form method="post" action="{esc(detail_url(adv.ghsa_id))}/confirm" style="display:inline">
 <input type="hidden" name="action" value="unconfirm">
 <input type="hidden" name="token" value="{esc(csrf_token)}">
 <button type="submit">Onay&#305; geri al</button>
@@ -241,7 +242,7 @@ def render_detail(
 <div class="muted">CERT-TR e-postas&#305; yaln&#305;zca CVE ID tahsisi yapar; yay&#305;n anlam&#305;na gelmez.
 Yay&#305;nland&#305;&#287;&#305;n&#305; do&#287;rulad&#305;&#287;&#305;n&#305;zda kay&#305;t NVD&#39;ye y&#246;nlendirilir.</div>
 <p>
-<form method="post" action="{esc(_detail_url(adv.ghsa_id))}/confirm">
+<form method="post" action="{esc(detail_url(adv.ghsa_id))}/confirm">
 <input type="hidden" name="action" value="confirm">
 <input type="hidden" name="token" value="{esc(csrf_token)}">
 <button type="submit">NVD&#39;de yay&#305;nland&#305; olarak i&#351;aretle</button>

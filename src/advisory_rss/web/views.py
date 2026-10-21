@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 import secrets
 from urllib.parse import parse_qs, urlparse
 
@@ -12,9 +13,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from advisory_rss.cache.models import NormalizedAdvisory, is_cert_tr
 from advisory_rss.cache.store import CacheStore
 from advisory_rss.config.settings import Settings
-from advisory_rss.web.render import STYLESHEET, render_detail, render_index
+from advisory_rss.web.render import STYLESHEET, detail_url, render_detail, render_index
 
 logger = logging.getLogger(__name__)
+
+_ADVISORY_ID_RE = re.compile(
+    r"(?:GHSA-[0-9A-Za-z]{4}(?:-[0-9A-Za-z]{4}){1,2}|CERT-TR-CVE-\d{4}-\d{4,})"
+)
 
 # HTML pages need the stylesheet from the same origin; no scripts at all.
 UI_CSP = (
@@ -59,7 +64,11 @@ def _check_origin(request: Request) -> None:
     except ValueError:
         raise HTTPException(status_code=403, detail="Forbidden") from None
     if origin_netloc != host:
-        logger.warning("Rejected cross-origin UI request origin=%s host=%s", origin, host)
+        logger.warning(
+            "Rejected cross-origin UI request origin=%s host=%s",
+            _log_safe(origin),
+            _log_safe(host),
+        )
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
@@ -68,6 +77,25 @@ def _find_advisory(cache: CacheStore, ghsa_id: str) -> NormalizedAdvisory | None
         if adv.ghsa_id == ghsa_id:
             return adv
     return None
+
+
+def _valid_advisory_id(ghsa_id: str) -> bool:
+    """True only for ids in the two formats the sources can produce."""
+    return bool(_ADVISORY_ID_RE.fullmatch(ghsa_id))
+
+
+def _log_safe(value: str) -> str:
+    """Strip line breaks so a value can never forge a log entry."""
+    return value.replace("\r\n", "").replace("\n", "").replace("\r", "")
+
+
+def _lookup_advisory(cache: CacheStore, ghsa_id: str) -> NormalizedAdvisory:
+    if not _valid_advisory_id(ghsa_id):
+        raise HTTPException(status_code=404, detail="Advisory not found")
+    adv = _find_advisory(cache, ghsa_id)
+    if adv is None:
+        raise HTTPException(status_code=404, detail="Advisory not found")
+    return adv
 
 
 async def _read_form(request: Request) -> dict[str, str]:
@@ -133,9 +161,7 @@ def build_detail_response(
     ghsa_id: str,
 ) -> HTMLResponse:
     """Render the detail page (full mail + publication state)."""
-    adv = _find_advisory(cache, ghsa_id)
-    if adv is None:
-        raise HTTPException(status_code=404, detail="Advisory not found")
+    adv = _lookup_advisory(cache, ghsa_id)
     confirmed_ids = cache.load_confirmed_ids()
     confirmations = cache.load_confirmations()
 
@@ -154,7 +180,7 @@ def build_detail_response(
         adv=adv,
         confirmed_ids=confirmed_ids,
         confirmations=confirmations,
-        csrf_token=_csrf_token(cache, ghsa_id),
+        csrf_token=_csrf_token(cache, adv.ghsa_id),
         flash=flash,
         flash_kind=flash_kind,
     )
@@ -186,11 +212,10 @@ def register_ui_routes(app: FastAPI, settings: Settings, cache: CacheStore) -> N
     @app.post("/ui/a/{ghsa_id}/confirm", include_in_schema=False)
     async def ui_confirm(ghsa_id: str, request: Request) -> Response:
         _check_origin(request)
-        adv = _find_advisory(cache, ghsa_id)
-        if adv is None:
-            raise HTTPException(status_code=404, detail="Advisory not found")
+        adv = _lookup_advisory(cache, ghsa_id)
         if not is_cert_tr(adv):
             raise HTTPException(status_code=400, detail="Only CERT-TR advisories can be confirmed")
+        canonical_id = adv.ghsa_id
 
         try:
             form = await _read_form(request)
@@ -198,16 +223,20 @@ def register_ui_routes(app: FastAPI, settings: Settings, cache: CacheStore) -> N
             logger.warning("UI confirm form parse failed: %s", e)
             raise HTTPException(status_code=400, detail="Bad request") from None
         provided = str(form.get("token") or "")
-        expected = _csrf_token(cache, ghsa_id)
+        expected = _csrf_token(cache, canonical_id)
         if not provided or not hmac.compare_digest(provided, expected):
-            logger.warning("UI confirm rejected - invalid CSRF token for %s", ghsa_id)
+            logger.warning(
+                "UI confirm rejected - invalid CSRF token for %s", _log_safe(canonical_id)
+            )
             raise HTTPException(status_code=403, detail="Invalid token")
 
         action = str(form.get("action") or "confirm").strip().lower()
         if action == "unconfirm":
-            cache.unconfirm_publication(ghsa_id)
-            logger.info("CERT-TR publication unconfirmed ghsa_id=%s", ghsa_id)
-            return RedirectResponse(url=f"/ui/a/{ghsa_id}?ok=unconfirmed", status_code=303)
-        cache.confirm_publication(ghsa_id)
-        logger.info("CERT-TR publication confirmed ghsa_id=%s", ghsa_id)
-        return RedirectResponse(url=f"/ui/a/{ghsa_id}?ok=confirmed", status_code=303)
+            cache.unconfirm_publication(canonical_id)
+            logger.info("CERT-TR publication unconfirmed ghsa_id=%s", _log_safe(canonical_id))
+            return RedirectResponse(
+                url=f"{detail_url(canonical_id)}?ok=unconfirmed", status_code=303
+            )
+        cache.confirm_publication(canonical_id)
+        logger.info("CERT-TR publication confirmed ghsa_id=%s", _log_safe(canonical_id))
+        return RedirectResponse(url=f"{detail_url(canonical_id)}?ok=confirmed", status_code=303)

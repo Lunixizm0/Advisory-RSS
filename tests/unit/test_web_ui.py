@@ -1,5 +1,6 @@
 """Minimal web UI: list page, detail page (full mail) and publication confirmation."""
 
+import logging
 import re
 from datetime import UTC, datetime
 
@@ -10,6 +11,7 @@ from advisory_rss.cache.models import NormalizedAdvisory
 from advisory_rss.cache.store import CacheStore
 from advisory_rss.config.settings import Settings
 from advisory_rss.server.app import create_app
+from advisory_rss.web.views import _valid_advisory_id
 
 MAIL_BODY = (
     'Merhaba,\n\nTUBITAK BILGEM firmasının "pardus-update" ürününde tespit edilen '
@@ -111,6 +113,81 @@ def test_detail_shows_full_mail(client):
 
 def test_detail_404_for_unknown(client):
     assert client.get("/ui/a/NOPE").status_code == 404
+
+
+MALFORMED_IDS = [
+    "CERT-TR-CVE-2026-114350%0Aforged",  # log injection attempt
+    "CERT-TR-CVE-2026-114350%0D%0Aforged",
+    "..%2F..%2Fetc%2Fpasswd",  # path traversal
+    "%2F%2Fevil.example.com",  # scheme-relative redirect attempt
+    "http:%2F%2Fevil.example.com",
+    "CVE-2026-114350",  # not an advisory id
+    "CERT-TR-CVE-2026",  # truncated
+    "CERT-TR-CVE-2026-114350 extra",
+]
+
+
+@pytest.mark.parametrize("bad_id", MALFORMED_IDS)
+def test_malformed_advisory_id_is_rejected(client, bad_id):
+    """Untrusted path ids must never reach the cache, the logs or a redirect."""
+    assert client.get(f"/ui/a/{bad_id}").status_code == 404
+    assert (
+        client.post(
+            f"/ui/a/{bad_id}/confirm",
+            data={"action": "confirm", "token": "deadbeef"},
+            follow_redirects=False,
+        ).status_code
+        == 404
+    )
+
+
+@pytest.mark.parametrize(
+    "good_id",
+    [
+        "CERT-TR-CVE-2026-114350",
+        "CERT-TR-CVE-2026-6849",
+        "GHSA-9vxv-2649-f3xc",
+        "GHSA-test-0001",
+    ],
+)
+def test_valid_advisory_ids_are_accepted(good_id):
+    assert _valid_advisory_id(good_id) is True
+
+
+@pytest.mark.parametrize("bad_id", ["", "NOPE", "GHSA-abc", "CERT-TR-CVE-2026-114350\n"])
+def test_invalid_advisory_ids_are_rejected(bad_id):
+    assert _valid_advisory_id(bad_id) is False
+
+
+def test_log_injection_attempt_does_not_forge_log_entry(client, caplog):
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        r = client.post(
+            "/ui/a/CERT-TR-CVE-2026-114350%0A[forged-entry]/confirm",
+            data={"action": "confirm", "token": "deadbeef"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 404
+    for record in caplog.records:
+        if not record.name.startswith("advisory_rss"):
+            continue  # http client logs the raw request line, not our app
+        assert "\n" not in record.getMessage()
+        assert "[forged-entry]" not in record.getMessage()
+
+
+def test_confirm_redirect_stays_on_same_origin(client):
+    page = client.get("/ui/a/CERT-TR-CVE-2026-114350")
+    token = _token(page.text)
+    r = client.post(
+        "/ui/a/CERT-TR-CVE-2026-114350/confirm",
+        data={"action": "confirm", "token": token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    location = r.headers.get("location", "")
+    assert location == "/ui/a/CERT-TR-CVE-2026-114350?ok=confirmed"
+    assert "://" not in location
+    assert not location.startswith("//")
 
 
 def test_confirm_requires_valid_token(client):
