@@ -1,0 +1,35 @@
+From: =?utf-8?q?=C3=9Cr=C3=BCn_G=C3=BCvenli=C4=9Fi_Koordinasyon_Ekibi?= <cve@siberguvenlik.gov.tr>
+Reply-To: =?utf-8?q?=C3=9Cr=C3=BCn_G=C3=BCvenli=C4=9Fi_Koordinasyon_Ekibi?= <cve@siberguvenlik.gov.tr>
+To: test@example.com
+Subject: =?utf-8?q?Zafiyet_Bildiriminiz_Hakk=C4=B1nda_(CVE-2026-92083)?=
+Date: Tue, 15 Sep 2026 13:23:43 +0000
+Message-Id: <sample-cve-2026-92083@siberguvenlik.gov.tr>
+MIME-Version: 1.0
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/html; charset=utf-8
+
+<html>
+<head>
+<meta http-equiv=3D"Content-Type" content=3D"text/html; charset=3Dwindows-1254">
+<style type=3D"text/css" style=3D"display:none;"><!-- P {margin-top:0;margin-bottom:0;} --></style>
+</head>
+<body dir=3D"ltr">
+<div id=3D"divtagdefaultwrapper" style=3D"font-size:12pt;color:#000000;font-family:Calibri,Helvetica,sans-serif;" dir=3D"ltr">
+<p></p>
+<div><span style=3D"font-family: &quot;Times New Roman&quot;, Times, serif; font-size: 12pt;">Merhaba,&nbsp;&nbsp;</span></div>
+<div><br>
+<span style=3D"font-family: &quot;Times New Roman&quot;, Times, serif; font-size: 12pt;">=E2=80=9CT=C3=9CB=C4=B0TAK B=C4=B0LGEM Yaz=C4=B1l=C4=B1m Teknolojileri Ara=C5=9Ft=C4=B1rma Enstit=C3=BCs=C3=BC=E2=80=9D Firmas=C4=B1n=C4=B1n =E2=80=9Cpardus-etap-settings=E2=80=9D =C3=BCr=C3=BCn=C3=BCnde tespit etti=C4=9Finiz =E2=80=9CCWE-862 Missing Authorization=E2=80=9D zafiyetine ili=C5=9Fkin CVE-2026-92083
+ kodu tahsis edilmi=C5=9Ftir. Zafiyetin giderilmesini m=C3=BCteakip CVE i=C3=A7eri=C4=9Fi doldurulacak ve ilan edilecektir.&nbsp;&nbsp;</span></div>
+<div><br>
+<span style=3D"font-family: &quot;Times New Roman&quot;, Times, serif; font-size: 12pt;">Bu s=C3=BCre=C3=A7te =C3=BCretici ile ileti=C5=9Fim i=C3=A7erisinde olunuz (taraf=C4=B1m=C4=B1zca da takip edilecektir) ve zafiyet giderildi=C4=9Finde
+</span><a href=3D"mailto:cve@siberguvenlik.gov.tr" class=3D"OWAAutoLink"><span style=3D"font-family: &quot;Times New Roman&quot;, Times, serif; font-size: 12pt;">cve@siberguvenlik.gov.tr</span></a><span style=3D"font-family: &quot;Times New Roman&quot;, Times, serif; font-size: 12pt;">
+ adresine e-posta g=C3=B6ndererek bizi bilgilendiriniz.&nbsp;&nbsp;</span></div>
+<div><br>
+<span style=3D"font-family: &quot;Times New Roman&quot;, Times, serif; font-size: 12pt;">Te=C5=9Fekk=C3=BCr eder, iyi =C3=A7al=C4=B1=C5=9Fmalar dileriz.</span></div>
+<div><br>
+<span style=3D"font-family: &quot;Times New Roman&quot;, Times, serif; font-size: 12pt;">T.C. Cumhurba=C5=9Fkanl=C4=B1=C4=9F=C4=B1</span><br>
+<span style=3D"font-family: &quot;Times New Roman&quot;, Times, serif; font-size: 12pt;">Siber G=C3=BCvenlik Ba=C5=9Fkanl=C4=B1=C4=9F=C4=B1</span><br>
+</div>
+</div>
+</body>
+</html>

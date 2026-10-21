@@ -2,9 +2,17 @@ from pathlib import Path
 
 from advisory_rss.cert_tr.parser import is_cert_tr_sender, parse_cert_tr_email
 
+SAMPLE_EMAIL = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "cert_tr" / "sample_cert_tr.eml"
+)
+
+
+def _sample_email() -> bytes:
+    return SAMPLE_EMAIL.read_bytes()
+
 
 def test_cert_tr_parse_sample():
-    raw = Path("tests/fixtures/cert_tr/CVE-2026-92083.eml").read_bytes()
+    raw = _sample_email()
     adv = parse_cert_tr_email(raw)
     assert adv is not None
     assert adv.ghsa_id == "CERT-TR-CVE-2026-92083"
@@ -29,7 +37,7 @@ def test_cert_tr_sender_allowlist():
 
 
 def test_cert_tr_parser_second_mail_update():
-    raw1 = Path("tests/fixtures/cert_tr/CVE-2026-92083.eml").read_bytes()
+    raw1 = _sample_email()
     adv1 = parse_cert_tr_email(raw1)
     assert adv1 is not None
     # Simulate update: same CVE but different body (e.g., patched)
@@ -42,7 +50,7 @@ def test_cert_tr_parser_second_mail_update():
 
 
 def test_cert_tr_parser_handles_quoted_printable_charset():
-    raw = Path("tests/fixtures/cert_tr/CVE-2026-92083.eml").read_bytes()
+    raw = _sample_email()
     adv = parse_cert_tr_email(raw)
     assert adv is not None
     # Check Turkish chars decoded correctly

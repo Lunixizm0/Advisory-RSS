@@ -46,6 +46,11 @@ Thumbs.db
 *.swo
 # fixtures are per-user (tied to author's GHSA) - each user generates their own
 # via `python scripts/fixtures_generator.py` - do not commit real fixtures or manifest
+# The sanitized CERT-TR parser sample is shared and tracked.
 tests/fixtures/*
 !tests/fixtures/.gitkeep
+!tests/fixtures/cert_tr/
+tests/fixtures/cert_tr/*
+!tests/fixtures/cert_tr/sample_cert_tr.eml
 uv.lock
+AGENTS.md
