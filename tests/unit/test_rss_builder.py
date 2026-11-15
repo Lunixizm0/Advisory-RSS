@@ -302,3 +302,44 @@ def test_rss_confirmed_cert_tr_links_to_nvd():
     cats = [c.text for c in item.findall("category")]
     assert "nvd:published" in cats
     assert "state:published" in cats
+    # Published items must never send the reader back to the local web UI.
+    assert "/ui/a/" not in xml
+    assert "Tam maili görüntüle" not in xml
+
+
+def test_rss_confirmed_cert_tr_ignores_non_nvd_html_url():
+    adv = _cert_tr_adv()
+    # Even if the cached html_url points somewhere else, a confirmed item opens NVD.
+    adv.html_url = "https://siberguvenlik.gov.tr/guvenlik-bildirimleri/detay/tr-26-1532"
+    xml = build_rss(
+        [adv],
+        feed_title="t",
+        feed_link="https://a",
+        feed_description="d",
+        authenticated_user="u",
+        base_url="http://127.0.0.1:8765",
+        confirmed_ids={"CERT-TR-CVE-2026-114350"},
+    )
+    root = ET.fromstring(xml.encode("utf-8"))
+    item = root.find("channel/item")  # type: ignore[union-attr]
+    assert item is not None
+    link = item.find("link")
+    assert link is not None
+    assert link.text == "https://nvd.nist.gov/vuln/detail/CVE-2026-114350"
+    assert "/ui/a/" not in xml
+
+
+def test_rss_generator_uses_package_version():
+    from advisory_rss import __version__
+
+    xml = build_rss(
+        [make_adv("GHSA-gen-0001")],
+        feed_title="t",
+        feed_link="https://a",
+        feed_description="d",
+    )
+    root = ET.fromstring(xml)
+    generator = root.find("channel/generator")
+    assert generator is not None
+    assert __version__ in (generator.text or "")
+    assert "0.2.0" not in (generator.text or "")

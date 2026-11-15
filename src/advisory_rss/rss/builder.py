@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from email.utils import format_datetime
 from urllib.parse import quote
 
+from advisory_rss import __version__
 from advisory_rss.cache.models import (
     NormalizedAdvisory,
     effective_state,
@@ -104,11 +105,12 @@ def _build_item_xml(
     raw_link = adv.html_url.strip() if adv.html_url else ""
     if cert_tr:
         if confirmed:
-            link = raw_link if _is_safe_url(raw_link) else _nvd_url(adv)
+            # Published on NVD -> always open the NVD record, never the local UI.
+            link = _nvd_url(adv)
         else:
             # Not published on NVD yet -> point to the local page with the full mail
             local = _local_detail_url(adv, base_url)
-            link = local or _nvd_url(adv)
+            link = local or "https://siberguvenlik.gov.tr"
     else:
         link = (
             raw_link if _is_safe_url(raw_link) else f"https://github.com/advisories/{adv.ghsa_id}"
@@ -210,9 +212,13 @@ def _build_description_html(
 
     if is_cert_tr(adv):
         parts.append(_cert_tr_status_html(adv, confirmed_ids))
-        local = _local_detail_url(adv, base_url)
-        if local:
-            parts.append(f'<p><a href="{html.escape(local)}">Tam maili görüntüle (yerel)</a></p>')
+        if adv.ghsa_id not in (confirmed_ids or set()):
+            # Only unpublished items need the local page; confirmed items open NVD.
+            local = _local_detail_url(adv, base_url)
+            if local:
+                parts.append(
+                    f'<p><a href="{html.escape(local)}">Tam maili görüntüle (yerel)</a></p>'
+                )
 
     if adv.package_name or adv.package_ecosystem:
         eco = html.escape(adv.package_ecosystem or "")
@@ -333,15 +339,16 @@ def _build_content_html(
         parts.append("</ul>")
 
     if is_cert_tr(adv):
-        local = _local_detail_url(adv, base_url)
-        if local:
-            parts.append(f'<p><a href="{html.escape(local)}">Tam maili görüntüle (yerel)</a></p>')
-        view_link = _nvd_url(adv) if confirmed else "#"
-        label = "NVD kaydını aç" if confirmed else "NVD kaydı (henüz yayınlanmadı)"
+        if not confirmed:
+            local = _local_detail_url(adv, base_url)
+            if local:
+                parts.append(
+                    f'<p><a href="{html.escape(local)}">Tam maili görüntüle (yerel)</a></p>'
+                )
+            parts.append("<p><em>NVD kaydı (henüz yayınlanmadı)</em></p>")
     else:
         view_link = adv.html_url if _is_safe_url(adv.html_url) else "#"
-        label = "View on GitHub"
-    parts.append(f'<p><a href="{html.escape(view_link)}">{label}</a></p>')
+        parts.append(f'<p><a href="{html.escape(view_link)}">View on GitHub</a></p>')
     # source footer
     src = getattr(adv, "source", "github") or "github"
     if src == "cert-tr":
@@ -420,7 +427,7 @@ def build_rss(
     <language>{lang}</language>
     <ttl>{ttl_minutes}</ttl>
     <lastBuildDate>{escape_text(last_build)}</lastBuildDate>
-    <generator>advisory-rss 0.2.0 (localhost-only)</generator>
+    <generator>{escape_text(f"advisory-rss {__version__} (localhost-only)")}</generator>
 {items_xml}
   </channel>
 </rss>"""
@@ -450,7 +457,7 @@ def build_rss(
     <language>{lang}</language>
     <ttl>{ttl_minutes}</ttl>
     <lastBuildDate>{escape_text(last_build)}</lastBuildDate>
-    <generator>advisory-rss 0.2.0 (localhost-only)</generator>
+    <generator>{escape_text(f"advisory-rss {__version__} (localhost-only)")}</generator>
 {cand_items}
   </channel>
 </rss>"""

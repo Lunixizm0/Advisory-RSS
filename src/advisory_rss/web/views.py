@@ -5,6 +5,7 @@ import hmac
 import logging
 import re
 import secrets
+import sqlite3
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import FastAPI, HTTPException, Request
@@ -13,7 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from advisory_rss.cache.models import NormalizedAdvisory, is_cert_tr
 from advisory_rss.cache.store import CacheStore
 from advisory_rss.config.settings import Settings
-from advisory_rss.web.render import STYLESHEET, detail_url, render_detail, render_index
+from advisory_rss.web.render import STYLESHEET, detail_url, nvd_url, render_detail, render_index
 
 logger = logging.getLogger(__name__)
 
@@ -132,12 +133,17 @@ def build_index_response(request: Request, cache: CacheStore) -> HTMLResponse:
     cert_tr_count = sum(1 for a in advisories if is_cert_tr(a))
     pending_count = sum(1 for a in advisories if is_cert_tr(a) and a.ghsa_id not in confirmed_ids)
 
+    # Pending is a CERT-TR-only state (CVE ID allocated, NVD publication not
+    # confirmed yet). A GitHub source filter would render an empty list while the
+    # counter still reports pending items, so fall back to the combined view.
+    if state_filter == "pending" and source_filter == "github":
+        source_filter = "all"
     if source_filter != "all":
         advisories = [
             a for a in advisories if (getattr(a, "source", "github") or "github") == source_filter
         ]
     if state_filter == "pending":
-        advisories = [a for a in advisories if a.ghsa_id not in confirmed_ids]
+        advisories = [a for a in advisories if is_cert_tr(a) and a.ghsa_id not in confirmed_ids]
 
     counts = {
         "total": github_count + cert_tr_count,
@@ -206,7 +212,16 @@ def register_ui_routes(app: FastAPI, settings: Settings, cache: CacheStore) -> N
         return RedirectResponse(url="/rss.xml", status_code=302)
 
     @app.get("/ui/a/{ghsa_id}", include_in_schema=False)
-    async def ui_detail(ghsa_id: str, request: Request) -> HTMLResponse:
+    async def ui_detail(ghsa_id: str, request: Request) -> Response:
+        adv = _lookup_advisory(cache, ghsa_id)
+        manage = request.query_params.get("manage", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if is_cert_tr(adv) and adv.ghsa_id in cache.load_confirmed_ids() and not manage:
+            # Published on NVD -> the local detail URL is never shown; go there.
+            return RedirectResponse(url=nvd_url(adv), status_code=303)
         return build_detail_response(request, cache, ghsa_id)
 
     @app.post("/ui/a/{ghsa_id}/confirm", include_in_schema=False)
@@ -231,12 +246,24 @@ def register_ui_routes(app: FastAPI, settings: Settings, cache: CacheStore) -> N
             raise HTTPException(status_code=403, detail="Invalid token")
 
         action = str(form.get("action") or "confirm").strip().lower()
-        if action == "unconfirm":
-            cache.unconfirm_publication(canonical_id)
-            logger.info("CERT-TR publication unconfirmed ghsa_id=%s", _log_safe(canonical_id))
-            return RedirectResponse(
-                url=f"{detail_url(canonical_id)}?ok=unconfirmed", status_code=303
+        if action not in ("confirm", "unconfirm"):
+            raise HTTPException(status_code=400, detail="Invalid action")
+        try:
+            if action == "unconfirm":
+                cache.unconfirm_publication(canonical_id)
+                logger.info("CERT-TR publication unconfirmed ghsa_id=%s", _log_safe(canonical_id))
+                return RedirectResponse(
+                    url=f"{detail_url(canonical_id)}?ok=unconfirmed", status_code=303
+                )
+            cache.confirm_publication(canonical_id)
+            logger.info("CERT-TR publication confirmed ghsa_id=%s", _log_safe(canonical_id))
+            # Confirmed -> open the NVD record directly, not the local web UI.
+            return RedirectResponse(url=nvd_url(adv), status_code=303)
+        except sqlite3.Error as e:
+            logger.warning(
+                "UI confirm action failed ghsa_id=%s action=%s: %s",
+                _log_safe(canonical_id),
+                action,
+                _log_safe(str(e)),
             )
-        cache.confirm_publication(canonical_id)
-        logger.info("CERT-TR publication confirmed ghsa_id=%s", _log_safe(canonical_id))
-        return RedirectResponse(url=f"{detail_url(canonical_id)}?ok=confirmed", status_code=303)
+            return RedirectResponse(url=f"{detail_url(canonical_id)}?ok=error", status_code=303)

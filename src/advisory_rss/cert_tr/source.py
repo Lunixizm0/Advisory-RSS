@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import imaplib
 import logging
+import sqlite3
 from typing import Any
 
 from advisory_rss.cache.models import NormalizedAdvisory
+from advisory_rss.cache.store import CacheStore
 from advisory_rss.cert_tr import imap as cert_imap
 from advisory_rss.cert_tr.parser import is_cert_tr_sender, parse_cert_tr_email
 from advisory_rss.config.settings import Settings
@@ -15,8 +17,35 @@ logger = logging.getLogger(__name__)
 
 
 class CertTrSource:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, cache: CacheStore | None = None):
         self.settings = settings
+        self.cache = cache
+
+    def _auto_confirm(self, adv: NormalizedAdvisory, diag: dict[str, Any]) -> None:
+        """Record NVD publication when the official mail is matched by CVE.
+
+        The publication mail may change the product name and wording, so only
+        the CVE identifiers from the subject are used; an item the user
+        manually unconfirmed is left alone.
+        """
+        if self.cache is None or not self.settings.cert_tr_auto_confirm:
+            return
+        raw = adv.raw or {}
+        publication_cves = list(raw.get("subject_cves") or [])
+        if not publication_cves and adv.cve_id:
+            publication_cves = [adv.cve_id]
+        for cve in publication_cves:
+            ghsa_id = f"CERT-TR-{str(cve).upper()}"
+            try:
+                inserted = self.cache.auto_confirm_publication(ghsa_id)
+            except sqlite3.Error as e:
+                msg = f"auto-confirm {ghsa_id} failed: {e}"
+                logger.warning(msg)
+                diag["errors"].append(msg)
+                continue
+            if inserted:
+                diag["auto_confirmed"].append(ghsa_id)
+                logger.info("CERT-TR auto-confirmed from publication mail ghsa_id=%s", ghsa_id)
 
     def fetch_all(self) -> tuple[list[NormalizedAdvisory], dict[str, Any]]:
         # Fetch from all configured Proton accounts.
@@ -25,6 +54,7 @@ class CertTrSource:
             "raw_fetched": 0,
             "parsed": 0,
             "filtered_sender": 0,
+            "auto_confirmed": [],
             "errors": [],
         }
         if not self.settings.enable_cert_tr:
@@ -51,9 +81,14 @@ class CertTrSource:
             email = acc.get("email", "unknown")
             folder = acc.get("folder", "INBOX")
             provider = acc.get("provider", "unknown")
-            if not acc.get("password"):
+            auth_method = (acc.get("auth_method") or "password").lower()
+            has_secret = bool(acc.get("password")) or (
+                auth_method == "oauth" and bool(acc.get("oauth_refresh_token"))
+            )
+            if not has_secret:
                 msg = (
-                    f"{provider} account {email}/{folder}: missing password/app-password - skipping"
+                    f"{provider} account {email}/{folder}: missing credentials "
+                    "(password/app-password or OAuth refresh token) - skipping"
                 )
                 logger.warning(msg)
                 diag["errors"].append(msg)
@@ -81,6 +116,8 @@ class CertTrSource:
                         continue
                     all_advs.append(adv)
                     diag["parsed"] += 1
+                    if (adv.raw or {}).get("publication"):
+                        self._auto_confirm(adv, diag)
                 except (ValueError, TypeError, AttributeError) as e:
                     logger.debug("parse_cert_tr_email failed: %s", e, exc_info=True)
                     continue

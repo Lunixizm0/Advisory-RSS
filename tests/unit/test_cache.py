@@ -148,3 +148,49 @@ def test_cache_publication_confirmation(tmp_path):
     assert store2.is_publication_confirmed("CERT-TR-CVE-2026-1") is False
     assert store2.unconfirm_publication("CERT-TR-CVE-2026-1") is False
     store2.close()
+
+
+def test_clear_drops_cache_but_keeps_user_state(tmp_path):
+    db = tmp_path / "clear.db"
+    store = CacheStore(db)
+    store.upsert_advisories([make_adv("CERT-TR-CVE-2026-1")])
+    store.set_etag("https://api.github.com/advisories", "etag-1")
+    store.set_meta("authenticated_user", "octocat")
+    store.confirm_publication("CERT-TR-CVE-2026-1")
+
+    store.clear()
+
+    assert store.count() == 0
+    assert store.get_etag("https://api.github.com/advisories") is None
+    # Meta (CSRF secret, sync timestamps) and manual confirmations are user
+    # state, not cache, and must survive a re-fetch.
+    assert store.get_meta("authenticated_user") == "octocat"
+    assert store.is_publication_confirmed("CERT-TR-CVE-2026-1") is True
+    store.close()
+
+
+def test_auto_confirm_respects_manual_unconfirm(tmp_path):
+    db = tmp_path / "auto.db"
+    store = CacheStore(db)
+    ghsa = "CERT-TR-CVE-2026-2"
+
+    assert store.auto_confirm_publication(ghsa) is True
+    assert store.is_publication_confirmed(ghsa) is True
+    # Idempotent: repeated publication mails do not change the confirmation time.
+    assert store.auto_confirm_publication(ghsa) is False
+
+    assert store.unconfirm_publication(ghsa) is True
+    assert store.is_publication_confirmed(ghsa) is False
+    # Manual opt-out must survive the next sync/publication mail.
+    assert store.auto_confirm_publication(ghsa) is False
+    assert store.is_publication_confirmed(ghsa) is False
+
+    store.close()
+    store2 = CacheStore(db)
+    assert store2.auto_confirm_publication(ghsa) is False
+    assert store2.is_publication_confirmed(ghsa) is False
+
+    # An explicit manual confirmation clears the opt-out.
+    store2.confirm_publication(ghsa)
+    assert store2.is_publication_confirmed(ghsa) is True
+    store2.close()

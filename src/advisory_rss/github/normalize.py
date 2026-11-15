@@ -38,8 +38,6 @@ def _get_first_vuln(vulns: Any) -> dict[str, Any] | None:
 def normalize_advisory(raw: dict[str, Any]) -> NormalizedAdvisory | None:
     try:
         ghsa = raw.get("ghsa_id") or raw.get("ghsaId") or ""
-        if not ghsa:
-            ghsa = raw.get("id") or ""
         ghsa = str(ghsa).strip()
         if not ghsa:
             logger.warning("Skipping advisory with no GHSA id: keys=%s", list(raw.keys())[:10])

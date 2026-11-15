@@ -88,6 +88,10 @@ CREATE TABLE IF NOT EXISTS cert_tr_publications(
     ghsa_id TEXT PRIMARY KEY,
     confirmed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS cert_tr_unconfirmed(
+    ghsa_id TEXT PRIMARY KEY,
+    unconfirmed_at TEXT NOT NULL
+);
 """
 
 
@@ -298,6 +302,12 @@ class CacheStore:
                 return 0
 
     def clear(self) -> None:
+        """Drop cached advisories and ETags.
+
+        User state is intentionally preserved: meta (UI CSRF secret,
+        authenticated_user, sync timestamps) and CERT-TR publication
+        confirmations are not cache data and must survive a re-fetch.
+        """
         logger.info("cache clear initiated")
         with _lock:
             try:
@@ -393,6 +403,8 @@ class CacheStore:
         now = datetime.now(UTC).isoformat()
         with _lock:
             try:
+                # An explicit confirmation overrides an earlier manual opt-out.
+                self._conn.execute("DELETE FROM cert_tr_unconfirmed WHERE ghsa_id=?", (ghsa_id,))
                 self._conn.execute(
                     "INSERT INTO cert_tr_publications(ghsa_id, confirmed_at) VALUES (?, ?) "
                     "ON CONFLICT(ghsa_id) DO UPDATE SET confirmed_at=excluded.confirmed_at",
@@ -401,18 +413,54 @@ class CacheStore:
                 logger.info("CERT-TR publication confirmed ghsa_id=%s", ghsa_id)
             except sqlite3.Error as e:
                 logger.warning("confirm_publication failed %s: %s", ghsa_id, e)
+                raise
         return now
 
-    def unconfirm_publication(self, ghsa_id: str) -> bool:
+    def auto_confirm_publication(self, ghsa_id: str) -> bool:
+        """Confirm from an official publication mail unless the user opted out.
+
+        Returns True only when a new confirmation row was inserted (idempotent).
+        """
+        now = datetime.now(UTC).isoformat()
         with _lock:
             try:
+                if self._is_manually_unconfirmed(ghsa_id):
+                    logger.debug("auto-confirm skipped - manually unconfirmed ghsa_id=%s", ghsa_id)
+                    return False
                 cur = self._conn.execute(
-                    "DELETE FROM cert_tr_publications WHERE ghsa_id=?", (ghsa_id,)
+                    "INSERT INTO cert_tr_publications(ghsa_id, confirmed_at) VALUES (?, ?) "
+                    "ON CONFLICT(ghsa_id) DO NOTHING",
+                    (ghsa_id, now),
                 )
                 return cur.rowcount > 0
             except sqlite3.Error as e:
+                logger.warning("auto_confirm_publication failed %s: %s", ghsa_id, e)
+                raise
+
+    def _is_manually_unconfirmed(self, ghsa_id: str) -> bool:
+        """Caller must hold ``_lock``."""
+        cur = self._conn.execute("SELECT 1 FROM cert_tr_unconfirmed WHERE ghsa_id=?", (ghsa_id,))
+        return cur.fetchone() is not None
+
+    def unconfirm_publication(self, ghsa_id: str) -> bool:
+        now = datetime.now(UTC).isoformat()
+        with _lock:
+            try:
+                # Remember the decision so auto-confirm does not undo it on the
+                # next sync while the publication mail is still in the mailbox.
+                self._conn.execute(
+                    "INSERT INTO cert_tr_unconfirmed(ghsa_id, unconfirmed_at) VALUES (?, ?) "
+                    "ON CONFLICT(ghsa_id) DO UPDATE SET unconfirmed_at=excluded.unconfirmed_at",
+                    (ghsa_id, now),
+                )
+                cur = self._conn.execute(
+                    "DELETE FROM cert_tr_publications WHERE ghsa_id=?", (ghsa_id,)
+                )
+                logger.info("CERT-TR publication unconfirmed ghsa_id=%s", ghsa_id)
+                return cur.rowcount > 0
+            except sqlite3.Error as e:
                 logger.warning("unconfirm_publication failed %s: %s", ghsa_id, e)
-                return False
+                raise
 
     def is_publication_confirmed(self, ghsa_id: str) -> bool:
         with _lock:

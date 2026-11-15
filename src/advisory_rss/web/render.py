@@ -147,11 +147,33 @@ def _nav(source_filter: str, state_filter: str) -> str:
 <a href="/?source=all&amp;state={st}"{active(src, "all")}>T&uuml;m&uuml;</a>
 <a href="/?source=github&amp;state={st}"{active(src, "github")}>GitHub</a>
 <a href="/?source=cert-tr&amp;state={st}"{active(src, "cert-tr")}>CERT-TR</a>
-<a href="/?source={src}&amp;state=pending"{active(st, "pending")}>Onay bekleyen</a>
+<a href="/?source=all&amp;state=pending"{active(st, "pending")}>Onay bekleyen</a>
 <a href="/rss.xml">RSS feed</a>
 <a href="/health">health</a>
 </nav>
 </header>"""
+
+
+def nvd_url(adv: NormalizedAdvisory) -> str:
+    if adv.cve_id:
+        return f"https://nvd.nist.gov/vuln/detail/{quote(adv.cve_id, safe='')}"
+    return "https://siberguvenlik.gov.tr"
+
+
+def _list_link(adv: NormalizedAdvisory, confirmed_ids: set[str]) -> tuple[str, str]:
+    """Return (href, extra_attrs) for the advisory title in the list.
+
+    A CERT-TR item confirmed as published on NVD opens the NVD record directly
+    instead of the local mail page.
+    """
+    if is_cert_tr(adv) and adv.ghsa_id in confirmed_ids:
+        return nvd_url(adv), ' target="_blank" rel="noopener noreferrer"'
+    return detail_url(adv.ghsa_id), ""
+
+
+def _detail_hint(adv: NormalizedAdvisory) -> str:
+    # Confirmed items expose only the NVD URL; no local web URL is shown.
+    return f'<div class="muted">{esc(adv.ghsa_id)}</div>'
 
 
 def render_index(
@@ -170,11 +192,12 @@ def render_index(
         severity = adv.severity or "-"
         conversation = conversation_label(adv)
         conv_cell = f'<span class="badge">{esc(conversation)}</span>' if conversation else "-"
+        title_href, title_attrs = _list_link(adv, confirmed_ids)
         rows.append(
             "<tr>"
             f"<td>{_source_badge(adv)}<br>{_state_badge(adv, confirmed_ids)}</td>"
-            f'<td><a href="{esc(detail_url(adv.ghsa_id))}">{esc(adv.summary or adv.ghsa_id)}</a>'
-            f'<div class="muted">{esc(adv.ghsa_id)}</div></td>'
+            f'<td><a href="{esc(title_href)}"{title_attrs}>{esc(adv.summary or adv.ghsa_id)}</a>'
+            f"{_detail_hint(adv)}</td>"
             f"<td>{esc(cve)}</td>"
             f"<td>{esc(package)}</td>"
             f"<td>{esc(severity)}</td>"
@@ -227,7 +250,7 @@ def render_detail(
 <strong>NVD&#39;de yay&#305;nland&#305; olarak i&#351;aretlendi</strong>
 <div class="muted">Onay zaman&#305;: {esc(_fmt_dt(_parse_iso(confirmed_at)))}</div>
 <p>
-<a href="https://nvd.nist.gov/vuln/detail/{esc(adv.cve_id or "")}">NVD kayd&#305;n&#305; a&#351;</a>
+<a href="{esc(nvd_url(adv))}">NVD kayd&#305;</a>
 &nbsp;&middot;&nbsp;
 <form method="post" action="{esc(detail_url(adv.ghsa_id))}/confirm" style="display:inline">
 <input type="hidden" name="action" value="unconfirm">
@@ -361,6 +384,7 @@ __all__ = [
     "CERT_TR_STATE_PUBLISHED",
     "STYLESHEET",
     "esc",
+    "nvd_url",
     "render_detail",
     "render_index",
 ]

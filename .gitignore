@@ -52,5 +52,6 @@ tests/fixtures/*
 !tests/fixtures/cert_tr/
 tests/fixtures/cert_tr/*
 !tests/fixtures/cert_tr/sample_cert_tr.eml
+!tests/fixtures/cert_tr/sample_publication.eml
 uv.lock
 AGENTS.md

@@ -5,7 +5,6 @@ from __future__ import annotations
 import imaplib
 import logging
 import ssl
-import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -290,28 +289,9 @@ def fetch_raw_emails(
             uids = uids[:max_mails]
 
         batch_size = 25
-        fetched = 0
+        aborted = False
         for i in range(0, len(uids), batch_size):
             batch = uids[i : i + batch_size]
-            if i > 0:
-                try:
-                    mail.logout()
-                except (OSError, imaplib.IMAP4.error) as e:
-                    logger.debug("Logout during reconnect failed for %s: %s", email, e)
-                time.sleep(0.3)
-                try:
-                    mail = connect_imap(account)
-                    _select_folder_imap(mail, folder, readonly=True)
-                except (
-                    OSError,
-                    imaplib.IMAP4.error,
-                    ssl.SSLError,
-                    ValueError,
-                    UnicodeEncodeError,
-                ) as e:
-                    logger.warning("IMAP reconnect failed %s batch %d: %s", email, i, e)
-                    break
-
             for uid in batch:
                 try:
                     uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
@@ -325,10 +305,19 @@ def fetch_raw_emails(
                             and isinstance(item[1], bytes)
                         ):
                             raw_list.append(item[1])
-                            fetched += 1
-                        elif isinstance(item, bytes) and len(item) > 100:
-                            raw_list.append(item)
-                            fetched += 1
+                except (imaplib.IMAP4.abort, OSError) as e:
+                    # The session is gone (idle timeout, Bridge restart, socket
+                    # error). Stop instead of hammering a dead connection and
+                    # returning a silently truncated result.
+                    logger.warning(
+                        "IMAP connection lost %s/%r after %d mails: %s",
+                        email,
+                        folder,
+                        len(raw_list),
+                        e,
+                    )
+                    aborted = True
+                    break
                 except imaplib.IMAP4.error as e:
                     try:
                         uid_s = uid.decode(errors="ignore") if isinstance(uid, bytes) else str(uid)
@@ -337,9 +326,11 @@ def fetch_raw_emails(
                         logger.debug("UID decode failed: %s", de)
                     logger.debug("IMAP fetch uid %s failed %s: %s", uid_s, email, e)
                     continue
-                except (OSError, ValueError, RuntimeError) as e:
+                except (ValueError, RuntimeError) as e:
                     logger.warning("IMAP fetch unexpected %s: %s", email, e)
                     continue
+            if aborted:
+                break
 
         logger.info(
             "IMAP fetch done %s/%r: requested %d, fetched %d raw",

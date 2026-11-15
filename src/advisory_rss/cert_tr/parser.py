@@ -26,8 +26,27 @@ from advisory_rss.cert_tr.threading import extract_message_ids
 
 logger = logging.getLogger(__name__)
 
-CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
+CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
 CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
+# Hostname-shaped domain (labels separated by dots). Rejects header injection /
+# lookalike tricks such as "evil.com?usom.gov.tr".
+_DOMAIN_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+# CERT-TR publication ("ilan edilmiştir") notice markers. The allocation mail
+# uses the future tense ("ilan edilecektir") and must not match.
+_PUBLISHED_RES = (
+    re.compile(r"\bilan\s+edilmi[şs]tir\b", re.IGNORECASE),
+    re.compile(r"\byay[ıi]mlanm[ıi][şs]t[ıi]r\b", re.IGNORECASE),
+    re.compile(r"\byay[ıi]nlanm[ıi][şs]t[ıi]r\b", re.IGNORECASE),
+)
+_ANNOUNCEMENT_URL_RE = re.compile(
+    r"https?://(?:www\.)?siberguvenlik\.gov\.tr/guvenlik-bildirimleri/detay/[^\s\"'<>]+",
+    re.IGNORECASE,
+)
+_CVE_RECORD_URL_RE = re.compile(
+    r"https?://(?:www\.)?cve\.org/CVERecord\?id=CVE-\d{4}-\d{4,}", re.IGNORECASE
+)
 # product heuristic: “pardus-etap-settings” ürünü -> group 1
 PRODUCT_RE = re.compile(r"[“\"']([^”\"']{2,80})[”\"']\s*ürün", re.IGNORECASE)
 # fallback: quoted strings list
@@ -190,6 +209,25 @@ def _extract_cwe(text: str) -> str | None:
     return m.group(0).upper() if m else None
 
 
+def is_publication_notice(text: str) -> bool:
+    """True when a CERT-TR mail announces that the advisory was published.
+
+    The allocation mail only allocates the CVE ("... tahsis edilmiştir ... ilan
+    edilecektir"); only the publication mail contains a past-tense announcement
+    and/or an official advisory / CVE record link.
+    """
+    if not text:
+        return False
+    if _ANNOUNCEMENT_URL_RE.search(text) or _CVE_RECORD_URL_RE.search(text):
+        return True
+    return any(pattern.search(text) for pattern in _PUBLISHED_RES)
+
+
+def _extract_announcement_url(text: str) -> str | None:
+    match = _ANNOUNCEMENT_URL_RE.search(text or "")
+    return match.group(0) if match else None
+
+
 def _extract_product(text: str) -> str | None:
     if not text:
         return None
@@ -285,13 +323,10 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
     cve_primary = cves[0] if cves else None
     cwe = _extract_cwe(combined_text)
     product = _extract_product(combined_text)
-
-    if not cve_primary and message_id:
-        m = CVE_RE.search(message_id)
-        if m:
-            cve_primary = m.group(0).upper()
-            if cve_primary not in cves:
-                cves.append(cve_primary)
+    # Publication mails may change the product name / wording; match by CVE.
+    subject_cves = _extract_cves(subject)
+    publication = is_publication_notice(combined_text)
+    announcement_url = _extract_announcement_url(combined_text)
 
     if not cve_primary:
         logger.debug(
@@ -322,6 +357,8 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
         refs.append(f"https://cve.mitre.org/cgi-bin/cvename.cgi?name={cve_primary}")
     # also include siberguvenlik portal (generic)
     refs.append("https://siberguvenlik.gov.tr")
+    if announcement_url and announcement_url not in refs:
+        refs.append(announcement_url)
 
     # Links: CVE-based NVD link
     html_url = f"https://nvd.nist.gov/vuln/detail/{cve_primary}"
@@ -344,7 +381,8 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
     package_name = product
 
     # State: a CERT-TR mail means "CVE ID allocated", NOT "published".
-    # The item only becomes published after the user confirms it in the web UI.
+    # Publication is recorded only when the user confirms in the web UI or when
+    # the official "ilan edilmiştir" mail is matched by CVE in CertTrSource.
     state = CERT_TR_STATE_ASSIGNED
 
     # Updated/published = date
@@ -377,6 +415,9 @@ def parse_cert_tr_email(raw_bytes: bytes) -> NormalizedAdvisory | None:
         "in_reply_to_ids": in_reply_to_ids,
         "references": reference_ids,
         "cves": cves,
+        "subject_cves": subject_cves,
+        "publication": publication,
+        "announcement_url": announcement_url,
         "cwe": cwe,
         "product": product,
         "html_raw_snippet": (html_raw[:HTML_BODY_MAX] if html_raw else ""),
@@ -421,16 +462,12 @@ def is_cert_tr_sender(from_header: str, allowlist: list[str]) -> bool:
         return False
     decoded = decode_rfc2047(from_header)
     domain = _extract_domain(decoded)
-    if not domain:
-        # fallback raw lower
-        domain = from_header.lower()
+    if not domain or not _DOMAIN_RE.match(domain):
+        return False
     for allowed in allowlist:
-        allowed = allowed.lower().strip()
-        if not allowed:
+        allowed = allowed.lower().strip().strip(".")
+        if not allowed or not _DOMAIN_RE.match(allowed):
             continue
-        if domain == allowed or domain.endswith("." + allowed) or allowed in domain:
-            return True
-        # also substring check for safety
-        if allowed in from_header.lower():
+        if domain == allowed or domain.endswith("." + allowed):
             return True
     return False

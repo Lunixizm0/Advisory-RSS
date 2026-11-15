@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from advisory_rss import __version__
 from advisory_rss.cache.models import NormalizedAdvisory
 from advisory_rss.cache.store import CacheStore
 from advisory_rss.config.constants import (
@@ -107,7 +108,7 @@ class GitHubClient:
             headers={
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": GITHUB_API_VERSION,
-                "User-Agent": "advisory-rss/0.2.0",
+                "User-Agent": f"advisory-rss/{__version__}",
                 "Authorization": f"Bearer {token}",
             },
             follow_redirects=False,
@@ -547,35 +548,35 @@ class GitHubClient:
             authenticated_login = user.get("login") or user.get("name") or ""
             if not authenticated_login:
                 raise GitHubError("Cannot resolve authenticated user login")
-        # List orgs and repos
-        # Attempt org-wide first to reduce per-repo calls
-        orgs_raw = await self.list_user_orgs()
-        org_names = [o.get("login") for o in orgs_raw if isinstance(o, dict) and o.get("login")]
-        # Collect from org advisories
         aggregated_raw: list[dict[str, Any]] = []
-        for org in org_names:
-            if not org:
-                continue
-            try:
-                raw = await self.list_org_advisories(org)
-                diag["orgs_scanned"] += 1
-                if raw:
-                    aggregated_raw.extend(raw)
-            except (AuthError, RateLimitError):
-                raise
-            except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
-                diag["errors"].append(_redact(f"org {org}: {e}"))
+        extra_repos = self.settings.extra_repo_list()
+        extra_orgs = self.settings.extra_org_list()
 
         if self.settings.skip_full_scan:
             repos: list[dict[str, Any]] = []
             logger.info(
-                "SKIP_FULL_SCAN=true - skipping full owner/member enumeration, only scanning GITHUB_REPOS/GITHUB_ORG"
+                "SKIP_FULL_SCAN=true - skipping full owner/member enumeration and org-wide advisory scans; only scanning GITHUB_REPOS/GITHUB_ORG"
             )
         else:
+            # List orgs and repos
+            # Attempt org-wide first to reduce per-repo calls
+            orgs_raw = await self.list_user_orgs()
+            org_names = [o.get("login") for o in orgs_raw if isinstance(o, dict) and o.get("login")]
+            # Collect from org advisories
+            for org in org_names:
+                if not org:
+                    continue
+                try:
+                    raw = await self.list_org_advisories(org)
+                    diag["orgs_scanned"] += 1
+                    if raw:
+                        aggregated_raw.extend(raw)
+                except (AuthError, RateLimitError):
+                    raise
+                except (OSError, ValueError, RuntimeError, httpx.HTTPError) as e:
+                    diag["errors"].append(_redact(f"org {org}: {e}"))
             repos = await self.list_repos()
         # Also include extra repos/orgs from config (e.g., your-org/your-repo if not in affiliation list)
-        extra_repos = self.settings.extra_repo_list()
-        extra_orgs = self.settings.extra_org_list()
         if self.settings.skip_full_scan and not extra_repos and not extra_orgs:
             msg = "SKIP_FULL_SCAN=true but no GITHUB_REPOS/GITHUB_ORG set - nothing to scan"
             logger.error(msg)

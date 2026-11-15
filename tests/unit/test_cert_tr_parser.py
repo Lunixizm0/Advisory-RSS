@@ -1,14 +1,25 @@
 from pathlib import Path
 
-from advisory_rss.cert_tr.parser import is_cert_tr_sender, parse_cert_tr_email
+from advisory_rss.cert_tr.parser import (
+    is_cert_tr_sender,
+    is_publication_notice,
+    parse_cert_tr_email,
+)
 
 SAMPLE_EMAIL = (
     Path(__file__).resolve().parent.parent / "fixtures" / "cert_tr" / "sample_cert_tr.eml"
+)
+PUBLICATION_EMAIL = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "cert_tr" / "sample_publication.eml"
 )
 
 
 def _sample_email() -> bytes:
     return SAMPLE_EMAIL.read_bytes()
+
+
+def _publication_email() -> bytes:
+    return PUBLICATION_EMAIL.read_bytes()
 
 
 def test_cert_tr_parse_sample():
@@ -128,3 +139,60 @@ def test_cert_tr_parser_no_cve_skipped():
     raw = b"From: test@siberguvenlik.gov.tr\r\nSubject: Hello\r\nDate: Tue, 15 Sep 2026 13:23:43 +0000\r\nMessage-Id: <test@siberguvenlik.gov.tr>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nJust a hello, no CVE here."
     adv = parse_cert_tr_email(raw)
     assert adv is None
+
+
+def test_cert_tr_sender_rejects_lookalike_domains():
+    allow = ["usom.gov.tr"]
+    assert is_cert_tr_sender("x@mail.usom.gov.tr", allow)
+    assert not is_cert_tr_sender("x@notusom.gov.tr", allow)
+    assert not is_cert_tr_sender("x@usom.gov.tr.evil.com", allow)
+    assert not is_cert_tr_sender("x@evil.com?usom.gov.tr", allow)
+    assert not is_cert_tr_sender("", allow)
+    assert not is_cert_tr_sender("x@usom.gov.tr", ["not a domain"])
+
+
+def test_cert_tr_parser_cve_only_in_message_id_is_skipped():
+    raw = (
+        b"From: cve@siberguvenlik.gov.tr\r\n"
+        b"Subject: Zafiyet Bildirimi\r\n"
+        b"Date: Tue, 15 Sep 2026 13:23:43 +0000\r\n"
+        b"Message-Id: <CVE-2026-99999@siberguvenlik.gov.tr>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"Merhaba, bir zafiyet tespit edildi.\r\n"
+    )
+    # Message-Id is not a trustworthy advisory source: the CVE must appear in
+    # the subject/body for a CERT-TR mail to be accepted.
+    assert parse_cert_tr_email(raw) is None
+
+
+def test_cert_tr_publication_mail_detected():
+    adv = parse_cert_tr_email(_publication_email())
+    assert adv is not None
+    assert adv.ghsa_id == "CERT-TR-CVE-2026-92083"
+    assert adv.cve_id == "CVE-2026-92083"
+    assert adv.raw["publication"] is True
+    assert adv.raw["subject_cves"] == ["CVE-2026-92083"]
+    assert (
+        adv.raw["announcement_url"]
+        == "https://siberguvenlik.gov.tr/guvenlik-bildirimleri/detay/tr-26-1532"
+    )
+    assert adv.raw["announcement_url"] in adv.references
+    # Publication mail changes the product name; the CVE-based id stays stable.
+    assert adv.package_name == "pardus-image-writer"
+    assert adv.ghsa_id == f"CERT-TR-{adv.cve_id}"
+
+
+def test_cert_tr_allocation_mail_is_not_a_publication_notice():
+    adv = parse_cert_tr_email(_sample_email())
+    assert adv is not None
+    assert adv.raw["publication"] is False
+    assert adv.raw["announcement_url"] is None
+
+
+def test_is_publication_notice_requires_past_tense_or_official_link():
+    # Allocation mails use the future tense and must never auto-confirm.
+    assert not is_publication_notice("CVE-2026-1 kodu tahsis edilmiştir, ilan edilecektir.")
+    assert not is_publication_notice("")
+    assert is_publication_notice("CVE-2026-1 kodlu bildirim ilan edilmiştir.")
+    assert is_publication_notice("https://www.cve.org/CVERecord?id=CVE-2026-1000")

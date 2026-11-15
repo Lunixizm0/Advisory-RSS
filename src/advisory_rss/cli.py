@@ -521,7 +521,7 @@ def auth_login(
             refresh_token, access_token, expiry = run_gmail_oauth_flow(
                 client_id, client_secret, email
             )
-            click.echo(f"+ OAuth başarılı: refresh_token alındı ({refresh_token[:8]}...)")
+            click.echo("+ OAuth başarılı: refresh_token alındı")
         except (OSError, ValueError, RuntimeError) as e:
             click.echo(f"- OAuth hatası: {_redact(str(e))}", err=True)
             sys.exit(1)
@@ -738,7 +738,7 @@ def sync(source: str = "all") -> None:
             try:
                 from advisory_rss.cert_tr.source import CertTrSource
 
-                src = CertTrSource(settings)
+                src = CertTrSource(settings, cache=cache)
                 advs_ct, diag_ct = src.fetch_all()
                 combined_diag["cert_tr"] = diag_ct
                 combined_diag["errors"].extend(diag_ct.get("errors") or [])
@@ -765,6 +765,8 @@ def sync(source: str = "all") -> None:
                 combined_diag["errors"].append(msg)
         elif source in ("all", "cert-tr") and not settings.enable_cert_tr:
             click.echo("CERT-TR disabled (ENABLE_CERT_TR=false) - skipping.", err=True)
+            if source == "cert-tr":
+                sys.exit(1)
 
         # --- Upsert combined ---
         if not all_advisories:
@@ -772,13 +774,14 @@ def sync(source: str = "all") -> None:
             click.echo(
                 "No advisories from any source - cache unchanged. Check GITHUB_TOKEN / PROTON_* settings."
             )
-            # Still mark success if no error (to update next sync)
             if not combined_diag["errors"]:
                 cache.mark_success(user=cache.get_meta("authenticated_user"))
                 nxt = (datetime.now(UTC) + timedelta(seconds=settings.refresh_interval)).isoformat()
                 cache.set_meta("next_scheduled_sync", nxt)
-            else:
-                cache.mark_error("; ".join(combined_diag["errors"][:3]))
+                return 0
+            cache.mark_error("; ".join(combined_diag["errors"][:3]))
+            if source in ("github", "cert-tr"):
+                sys.exit(1)
             return 0
 
         # Dedup across sources (GitHub GHSA-* vs CERT-TR-* no collision, but keep logic)

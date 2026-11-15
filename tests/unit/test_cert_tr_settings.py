@@ -117,3 +117,53 @@ def test_mixed_proton_gmail_unified():
     gmail = next(a for a in accs if a["provider"] == "gmail")
     assert proton["host"] == "127.0.0.1"
     assert gmail["host"] == "imap.gmail.com"
+
+
+def test_folders_with_spaces_are_single_folder():
+    s = Settings(
+        _env_file="/dev/null",
+        ENABLE_CERT_TR="true",
+        PROTON_BRIDGE_EMAIL="a@proton.me",
+        PROTON_BRIDGE_PASSWORD="p1",
+        PROTON_IMAP_FOLDERS="CVE Yazışmaları",
+        _env_file_encoding="utf-8",
+    )
+    accs = s.get_proton_accounts()
+    assert [a["folder"] for a in accs] == ["CVE Yazışmaları"]
+
+
+def test_folders_are_not_split_on_whitespace():
+    # Whitespace inside a folder name is preserved; only comma/semicolon split.
+    s = Settings(
+        _env_file="/dev/null",
+        ENABLE_CERT_TR="true",
+        PROTON_BRIDGE_EMAIL="a@proton.me",
+        PROTON_BRIDGE_PASSWORD="p1",
+        PROTON_IMAP_FOLDERS="INBOX Sent",
+        _env_file_encoding="utf-8",
+    )
+    assert [a["folder"] for a in s.get_proton_accounts()] == ["INBOX Sent"]
+
+
+def test_folders_split_on_comma_and_semicolon():
+    s = Settings(
+        _env_file="/dev/null",
+        ENABLE_CERT_TR="true",
+        PROTON_BRIDGE_EMAILS="a@proton.me,b@proton.me",
+        PROTON_BRIDGE_PASSWORDS="p1,p2",
+        PROTON_IMAP_FOLDERS="INBOX; CVE Yazışmaları",
+        _env_file_encoding="utf-8",
+    )
+    assert [a["folder"] for a in s.get_proton_accounts()] == ["INBOX", "CVE Yazışmaları"]
+
+
+def test_gmail_folders_preserve_spaces():
+    s = Settings(
+        _env_file="/dev/null",
+        ENABLE_CERT_TR="true",
+        GMAIL_EMAIL="a@gmail.com",
+        GMAIL_APP_PASSWORD="pw",
+        GMAIL_IMAP_FOLDERS="CVE Yazışmaları",
+        _env_file_encoding="utf-8",
+    )
+    assert [a["folder"] for a in s.get_gmail_accounts()] == ["CVE Yazışmaları"]

@@ -1,0 +1,26 @@
+From: =?utf-8?q?=C3=9Cr=C3=BCn_G=C3=BCvenli=C4=9Fi_Koordinasyon_Ekibi?= <cve@siberguvenlik.gov.tr>
+To: user@example.invalid
+Subject: Zafiyet Bildiriminiz Hakkında (CVE-2026-92083)
+Date: Thu, 12 Nov 2026 14:43:15 +0000
+Message-Id: <sample-publication-cve-2026-92083@siberguvenlik.gov.tr>
+In-Reply-To: <sample-cve-2026-92083@siberguvenlik.gov.tr>
+References: <sample-cve-2026-92083@siberguvenlik.gov.tr>
+Reply-To: =?utf-8?q?=C3=9Cr=C3=BCn_G=C3=BCvenli=C4=9Fi_Koordinasyon_Ekibi?= <cve@siberguvenlik.gov.tr>
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+<html><body>
+<p>Merhaba,</p>
+<p>&ldquo;TÜBİTAK BİLGEM Yazılım Teknolojileri Araştırma Enstitüsü&rdquo; tarafından
+geliştirilen &ldquo;pardus-image-writer&rdquo; ürününde tespit ettiğiniz
+&ldquo;CWE-862 Missing Authorization&rdquo; zafiyetine istinaden atanan
+CVE-2026-92083 kodlu zafiyet bildirimi, politikamız kapsamında süreçlerin
+tamamlanmasını müteakip <strong>ilan edilmiştir</strong>.</p>
+<p>İlgili Siber Güvenlik Başkanlığı duyurusuna
+<a href="https://siberguvenlik.gov.tr/guvenlik-bildirimleri/detay/tr-26-1532">https://siberguvenlik.gov.tr/guvenlik-bildirimleri/detay/tr-26-1532</a>
+adresinden, CVE kaydına ise
+<a href="https://www.cve.org/CVERecord?id=CVE-2026-92083">https://www.cve.org/CVERecord?id=CVE-2026-92083</a>
+adresinden ulaşabilirsiniz.</p>
+<p>Teşekkür eder, iyi çalışmalar dileriz.</p>
+<p>T.C. Cumhurbaşkanlığı<br>Siber Güvenlik Başkanlığı</p>
+</body></html>

@@ -215,3 +215,40 @@ def test_plaintext_not_allowed_for_gmail():
             raise AssertionError(f"NONE should be rejected for {host}")
         except ValueError as ve:
             assert "Plaintext" in str(ve) or "IMAP host" in str(ve)
+
+
+def test_fetch_stops_when_connection_is_lost():
+    acc = {
+        "email": "a@proton.me",
+        "password": "p",
+        "folder": "INBOX",
+        "host": "127.0.0.1",
+        "port": "1143",
+        "security": "STARTTLS",
+    }
+    mock = MagicMock()
+    mock.select.return_value = ("OK", [b"1"])
+    mock.search.return_value = ("OK", [b"1 2"])
+    mock.fetch.side_effect = imaplib.IMAP4.abort("socket closed")
+    with patch("advisory_rss.cert_tr.imap.connect_imap", return_value=mock):
+        raws = fetch_raw_emails(acc, ["siberguvenlik.gov.tr"], max_mails=2)
+    # No silent per-uid retry storm: abort on the first failure.
+    assert raws == []
+    assert mock.fetch.call_count == 1
+
+
+def test_fetch_ignores_non_tuple_bodies():
+    acc = {
+        "email": "a@proton.me",
+        "password": "p",
+        "folder": "INBOX",
+        "host": "127.0.0.1",
+        "port": "1143",
+        "security": "STARTTLS",
+    }
+    mock = MagicMock()
+    mock.select.return_value = ("OK", [b"1"])
+    mock.search.return_value = ("OK", [b"1"])
+    mock.fetch.return_value = ("OK", [b"x" * 200])
+    with patch("advisory_rss.cert_tr.imap.connect_imap", return_value=mock):
+        assert fetch_raw_emails(acc, ["siberguvenlik.gov.tr"], max_mails=1) == []

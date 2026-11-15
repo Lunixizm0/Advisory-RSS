@@ -202,29 +202,34 @@ def create_app(
             ]
         feed_user = cache.get_meta("authenticated_user") or "user"
         ttl_minutes = max(1, settings.refresh_interval // 60)
-        # Mixed feed title when both sources present
+        # Mixed feed title/link by source composition
         has_github = any(
             (getattr(a, "source", "github") or "github") == "github" for a in advisories
         )
         has_cert = any(getattr(a, "source", "") == "cert-tr" for a in advisories)
-        if has_github and has_cert and src_filter == "all":
-            feed_title = f"Security Advisories (GitHub + CERT-TR) - @{feed_user}"
-            feed_desc = f"Mixed feed: GitHub advisories by @{feed_user} + CERT-TR via Proton Mail"
-        elif src_filter == "cert-tr":
+        if src_filter == "cert-tr":
             feed_title = "CERT-TR / Siber Güvenlik Başkanlığı Advisories"
             feed_desc = (
                 "CERT-TR advisories via Proton Mail (siberguvenlik.gov.tr) - "
                 "CVE ID tahsisleri, NVD'de yayınlanmış olarak işaretlenene kadar öyle görünür"
             )
+            feed_link = "https://siberguvenlik.gov.tr"
+        elif has_github and has_cert and src_filter == "all":
+            feed_title = f"Security Advisories (GitHub + CERT-TR) - @{feed_user}"
+            feed_desc = f"Mixed feed: GitHub advisories by @{feed_user} + CERT-TR via Proton Mail"
+            feed_link = f"https://github.com/{feed_user}"
+        elif has_cert and not has_github and src_filter == "all":
+            feed_title = "CERT-TR / Siber Güvenlik Başkanlığı Advisories"
+            feed_desc = (
+                "CERT-TR advisories via Proton Mail (siberguvenlik.gov.tr) - "
+                "CVE ID tahsisleri, NVD'de yayınlanmış olarak işaretlenene kadar öyle görünür"
+            )
+            feed_link = "https://siberguvenlik.gov.tr"
         else:
             feed_title = f"GitHub Security Advisories - @{feed_user}"
             feed_desc = f"Security advisories created by {feed_user} (author={feed_user}) via GitHub API - localhost-only feed"
-        # Keep feed_link sensible
-        feed_link = (
-            f"https://github.com/{feed_user}"
-            if src_filter != "cert-tr"
-            else "https://siberguvenlik.gov.tr"
-        )
+            feed_link = f"https://github.com/{feed_user}"
+
         xml = build_rss(
             advisories,
             feed_title=feed_title,
@@ -322,7 +327,7 @@ def create_app(
             if q_source in ("all", "cert-tr") and settings.enable_cert_tr:
                 from advisory_rss.cert_tr.source import CertTrSource
 
-                src = CertTrSource(settings)
+                src = CertTrSource(settings, cache=cache)
                 advs_ct, diag_ct = src.fetch_all()
                 all_advs.extend(advs_ct)
                 diag_comb["cert_tr"] = diag_ct
@@ -381,6 +386,8 @@ def create_app(
     async def unhandled(request: Request, exc: Exception):
         # Never leak stack trace to client (CWE-209/497). Log redacted
         # server-side with full trace for operators (RedactFilter scrubs tokens).
+        # RedactFilter sanitizes exc_info itself and stores the redacted traceback
+        # as exc_text, so passing the exception triple is safe.
         logger.error(
             "Unhandled error on %s: %s",
             request.url.path,
@@ -450,7 +457,7 @@ async def background_refresh_loop(settings: Settings, cache: CacheStore) -> None
                     from advisory_rss.cert_tr.source import CertTrSource
 
                     def _fetch_ct():
-                        src = CertTrSource(settings)
+                        src = CertTrSource(settings, cache=cache)
                         return src.fetch_all()
 
                     advs_ct, diag_ct = await asyncio.to_thread(_fetch_ct)

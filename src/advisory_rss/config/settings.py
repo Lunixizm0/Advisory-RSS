@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -213,6 +214,9 @@ class Settings(BaseSettings):
     )
     cert_tr_max_mails: int = Field(default=200, validation_alias="CERT_TR_MAX_MAILS")
     cert_tr_search_days: int | None = Field(default=None, validation_alias="CERT_TR_SEARCH_DAYS")
+    # Auto-confirm a CERT-TR item when the official "ilan edilmiştir" mail for
+    # its CVE arrives. Manual "onayı kaldır" in the web UI opts that item out.
+    cert_tr_auto_confirm: bool = Field(default=True, validation_alias="CERT_TR_AUTO_CONFIRM")
 
     def extra_repo_list(self) -> list[str]:
         import logging
@@ -394,16 +398,11 @@ class Settings(BaseSettings):
     def _validate_proton_folders(cls, v: str | None) -> str | None:
         if v is None or not str(v).strip():
             return v
-        import re
-
         raw = str(v).strip()
         if len(raw) > 500:
             raise ValueError("PROTON_IMAP_FOLDERS too long")
-        # split only on comma/semicolon to preserve spaces/brackets inside folder names
-        parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
-        # if no comma/semicolon but spaces, fallback to comma/whitespace split for backward compat
-        if len(parts) == 1 and "," not in raw and ";" not in raw:
-            parts = [p.strip() for p in re.split(r"[,\s;]+", raw) if p.strip()]
+        # Split only on comma/semicolon to preserve spaces/brackets inside folder names
+        parts = cls._split_folders(raw)
         for p in parts:
             if len(p) > 100 or not re.match(r"^[\w .\-/\[\]]+$", p):
                 raise ValueError(f"PROTON_IMAP_FOLDERS entry {p!r} invalid")
@@ -436,14 +435,11 @@ class Settings(BaseSettings):
     def _validate_gmail_folders(cls, v: str | None) -> str | None:
         if v is None or not str(v).strip():
             return v
-        import re
-
         raw = str(v).strip()
         if len(raw) > 500:
             raise ValueError("GMAIL_IMAP_FOLDERS too long")
-        parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
-        if len(parts) == 1 and "," not in raw and ";" not in raw:
-            parts = [p.strip() for p in re.split(r"[,\s;]+", raw) if p.strip()]
+        # Split only on comma/semicolon to preserve spaces/brackets inside folder names
+        parts = cls._split_folders(raw)
         for p in parts:
             if len(p) > 100 or not re.match(r"^[\w .\-/\[\]]+$", p):
                 raise ValueError(f"GMAIL_IMAP_FOLDERS entry {p!r} invalid")
@@ -493,18 +489,16 @@ class Settings(BaseSettings):
         parts = re.split(r"[,\s;]+", raw.strip())
         return [p.strip() for p in parts if p.strip()]
 
-    def _split_folders(self, raw: str | None) -> list[str]:
+    @staticmethod
+    def _split_folders(raw: str | None) -> list[str]:
+        """Split a folder list on comma/semicolon only.
+
+        Spaces are part of folder names (e.g. "CVE Yazışmaları"), so whitespace is
+        never used as a separator.
+        """
         if not raw or not raw.strip():
             return []
-        import re
-
-        # Split only on comma/semicolon to preserve spaces inside folder names (e.g., "CVE Yazışmaları")
-        parts = [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
-        if len(parts) <= 1 and "," not in raw and ";" not in raw:
-            # Fallback for backward compat where folders were space-separated without comma
-            # Only if no comma/semicolon present, split on whitespace/comma/semicolon
-            parts = [p.strip() for p in re.split(r"[,\s;]+", raw.strip()) if p.strip()]
-        return parts
+        return [p.strip() for p in re.split(r"[;,]+", raw) if p.strip()]
 
     def get_proton_accounts(self) -> list[dict[str, str]]:
         """Resolve multi-account Proton config.

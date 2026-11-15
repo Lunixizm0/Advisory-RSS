@@ -2,6 +2,7 @@
 
 import logging
 import re
+import sqlite3
 from datetime import UTC, datetime
 
 import pytest
@@ -175,7 +176,7 @@ def test_log_injection_attempt_does_not_forge_log_entry(client, caplog):
         assert "[forged-entry]" not in record.getMessage()
 
 
-def test_confirm_redirect_stays_on_same_origin(client):
+def test_confirm_redirects_directly_to_nvd(client):
     page = client.get("/ui/a/CERT-TR-CVE-2026-114350")
     token = _token(page.text)
     r = client.post(
@@ -184,10 +185,8 @@ def test_confirm_redirect_stays_on_same_origin(client):
         follow_redirects=False,
     )
     assert r.status_code == 303
-    location = r.headers.get("location", "")
-    assert location == "/ui/a/CERT-TR-CVE-2026-114350?ok=confirmed"
-    assert "://" not in location
-    assert not location.startswith("//")
+    # Confirmed -> NVD record, never the local web URL.
+    assert r.headers.get("location") == "https://nvd.nist.gov/vuln/detail/CVE-2026-114350"
 
 
 def test_confirm_requires_valid_token(client):
@@ -207,16 +206,41 @@ def test_confirm_then_rss_points_to_nvd(client):
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert "ok=confirmed" in r.headers.get("location", "")
+    assert "nvd.nist.gov/vuln/detail/CVE-2026-114350" in r.headers.get("location", "")
 
-    # detail now offers the NVD link
-    page2 = client.get("/ui/a/CERT-TR-CVE-2026-114350")
-    assert "https://nvd.nist.gov/vuln/detail/CVE-2026-114350" in page2.text
+    # A normal detail URL redirects to NVD; only ?manage=1 shows the local page.
+    detail = client.get("/ui/a/CERT-TR-CVE-2026-114350", follow_redirects=False)
+    assert detail.status_code == 303
+    assert detail.headers.get("location") == ("https://nvd.nist.gov/vuln/detail/CVE-2026-114350")
+    manage = client.get("/ui/a/CERT-TR-CVE-2026-114350?manage=1")
+    assert manage.status_code == 200
+    assert "Onay&#305; geri al" in manage.text
 
     # and the feed points to NVD again
     rss = client.get("/rss.xml")
-    assert "https://nvd.nist.gov/vuln/detail/CVE-2026-114350" in rss.text
+    assert "<link>https://nvd.nist.gov/vuln/detail/CVE-2026-114350</link>" in rss.text
     assert "[YAYINLANMADI]" not in rss.text
+    # ...and no longer exposes the local detail page as an item link.
+    assert "/ui/a/" not in rss.text
+
+
+def test_confirmed_index_title_opens_nvd_not_local_ui(client):
+    page = client.get("/ui/a/CERT-TR-CVE-2026-114350")
+    token = _token(page.text)
+    client.post(
+        "/ui/a/CERT-TR-CVE-2026-114350/confirm",
+        data={"action": "confirm", "token": token},
+        follow_redirects=False,
+    )
+
+    index = client.get("/").text
+    assert re.search(
+        r'<a href="https://nvd\.nist\.gov/vuln/detail/CVE-2026-114350"'
+        r"[^>]*>pardus-update",
+        index,
+    )
+    # A confirmed item exposes only the NVD URL, never the local web URL.
+    assert "/ui/a/" not in index
 
 
 def test_unconfirmed_rss_points_to_local_detail(client):
@@ -233,6 +257,7 @@ def test_unconfirm_reverts_to_pending(client):
     client.post(
         "/ui/a/CERT-TR-CVE-2026-114350/confirm",
         data={"action": "confirm", "token": token},
+        follow_redirects=False,
     )
     r = client.post(
         "/ui/a/CERT-TR-CVE-2026-114350/confirm",
@@ -336,3 +361,73 @@ def test_web_ui_can_be_disabled(tmp_path):
         assert c.get("/ui/a/CERT-TR-CVE-2026-114350").status_code == 404
         # the feed still works
         assert c.get("/rss.xml").status_code == 200
+
+
+def _client_with_both_sources(tmp_path) -> TestClient:
+    db = tmp_path / "both.db"
+    settings = Settings(
+        _env_file=None,
+        github_token="ghp_dummy",
+        bind_address="127.0.0.1",
+        port=8765,
+        cache_path=str(db),
+    )
+    cache = CacheStore(db)
+    cache.upsert_advisories(
+        [
+            _cert_tr_adv(),
+            NormalizedAdvisory(
+                ghsa_id="GHSA-test-0001",
+                summary="github item",
+                source="github",
+                html_url="https://github.com/advisories/GHSA-test-0001",
+            ),
+        ]
+    )
+    return TestClient(create_app(settings, cache))
+
+
+def test_pending_filter_excludes_github_advisories(tmp_path):
+    with _client_with_both_sources(tmp_path) as c:
+        r = c.get("/?state=pending")
+        assert "pardus-update" in r.text
+        assert "github item" not in r.text
+
+
+def test_pending_filter_with_github_source_does_not_render_empty_list(tmp_path):
+    with _client_with_both_sources(tmp_path) as c:
+        r = c.get("/?source=github&state=pending")
+        # The counter would report pending CERT-TR items, so the list must not be
+        # empty just because the GitHub tab was selected.
+        assert "pardus-update" in r.text
+        assert "github item" not in r.text
+
+
+def test_confirm_rejects_unknown_action(client):
+    page = client.get("/ui/a/CERT-TR-CVE-2026-114350")
+    token = _token(page.text)
+    r = client.post(
+        "/ui/a/CERT-TR-CVE-2026-114350/confirm",
+        data={"action": "delete", "token": token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+
+
+def test_confirm_db_error_redirects_with_error_flash(client, monkeypatch):
+    page = client.get("/ui/a/CERT-TR-CVE-2026-114350")
+    token = _token(page.text)
+
+    def boom(self, ghsa_id):
+        raise sqlite3.Error("boom")
+
+    monkeypatch.setattr(CacheStore, "confirm_publication", boom)
+    r = client.post(
+        "/ui/a/CERT-TR-CVE-2026-114350/confirm",
+        data={"action": "confirm", "token": token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/ui/a/CERT-TR-CVE-2026-114350?ok=error"
+    page2 = client.get("/ui/a/CERT-TR-CVE-2026-114350?ok=error")
+    assert "tamamlanamadı" in page2.text

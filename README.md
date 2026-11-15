@@ -236,14 +236,30 @@ CERT-TR mail  ->  state = cve_assigned   ("CVE ID tahsis - yayınlanmadı")
                      title prefix: [CERT-TR][YAYINLANMADI]
 
 you confirm   ->  state = published      (onay kaydı cache/advisories.db'de kalıcı)
+                     or the official "ilan edilmiştir" mail is auto-matched by CVE
                      RSS <link> -> https://nvd.nist.gov/vuln/detail/CVE-...
+                     web UI list title -> same NVD URL (local page only via ?manage=1)
                      RSS category: nvd:published , state:published
                      title prefix: [CERT-TR]
 ```
 
+Confirmed CERT-TR items open the NVD record directly on every primary link (RSS
+item link and web UI list title); the local `/ui/a/...` URL is no longer used for
+them. Confirming an item redirects the browser straight to NVD, and any detail URL
+for a confirmed item redirects there too (add `?manage=1` to reach the local page
+for "Onayı geri al").
+
+- **Automatic confirmation:** when CERT-TR sends the publication mail ("... ilan
+  edilmiştir", with the official `siberguvenlik.gov.tr/guvenlik-bildirimleri/detay/...`
+  and/or `cve.org/CVERecord?id=CVE-...` link), the matching item is confirmed
+  automatically. Matching is by **CVE number** (`CERT-TR-CVE-YYYY-NNNN`), so a changed
+  product name or wording in the publication mail does not create a second item.
+  Disable with `CERT_TR_AUTO_CONFIRM=false` in `.env`.
 - The confirmation is stored in the `cert_tr_publications` table of `cache/advisories.db`
   and survives re-syncs and restarts (a re-sync never clears it).
-- "Onayı geri al" reverts an item back to `cve_assigned`.
+- "Onayı geri al" reverts an item back to `cve_assigned` and records a manual opt-out
+  (`cert_tr_unconfirmed`); later publication mails no longer re-confirm that item.
+  The publication button overrides the opt-out again.
 - The form is CSRF protected (per-advisory HMAC token + `Origin` check); the UI has no
   JavaScript and a strict CSP (`default-src 'none'; style-src 'self'`).
 - The advisory id in the URL is validated (`GHSA-xxxx-xxxx-xxxx` / `CERT-TR-CVE-YYYY-NNNN`);
@@ -473,7 +489,7 @@ Key invariants: RSS reads cache only; GH enumeration is exhaustive; IMAP never s
 - **Global enrichment 404 for draft/private** - expected; we treat missing as not-enriched.
 - **Withdrawn state** differs between global (`withdrawn_at`/`is_withdrawn`) and repo (`state: closed/withdrawn` + `withdrawn_at`) - normalized into single `withdrawn_at`/`state`.
 - **CERT-TR IMAP `FROM` search is substring** - `FROM "siberguvenlik.gov.tr"` is server-side substring, but final `is_cert_tr_sender()` `src/advisory_rss/cert_tr/parser.py:429` does strict domain check; non-CVE mails are now skipped entirely.
-- **CERT-TR mail != published advisory** - a mail only means a CVE ID was allocated; the item is shown as `cve_assigned` and linked to the local UI until the user confirms the NVD publication (§6b).
+- **CERT-TR mail != published advisory** - an allocation mail only means a CVE ID was allocated; the item is shown as `cve_assigned` and linked to the local UI until the user confirms the NVD publication (§6b) or the official "ilan edilmiştir" mail is auto-matched by CVE.
 - **One cache row per CVE, not per mail** - follow-up mails of the same case replace the previous row, so conversations are not collected yet (§6c).
 - **Gmail/Proton folders with non-ASCII** (e.g., `CVE Yazışmaları`) require `modified UTF-7` fallback `src/advisory_rss/cert_tr/imap.py:24`; `GMAIL_IMAP_FOLDERS` must be comma-separated (spaces preserved), not whitespace-split.
 - **Gmail OAuth `refresh_token` only on first consent** - if `run_gmail_oauth_flow` `src/advisory_rss/auth/gmail.py:210` returns no `refresh_token`, revoke access at <https://myaccount.google.com/permissions> and retry with `prompt=consent`.
