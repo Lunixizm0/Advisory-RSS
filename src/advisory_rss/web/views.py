@@ -175,11 +175,11 @@ def build_detail_response(
     flash_kind = "ok"
     ok = request.query_params.get("ok")
     if ok == "confirmed":
-        flash = "Kayıt NVD'de yayınlandı olarak işaretlendi. RSS bağlantısı artık NVD'ye gidiyor."
+        flash = "Record marked as published on NVD. The RSS link now points to NVD."
     elif ok == "unconfirmed":
-        flash = "Onay kaldırıldı; kayıt yeniden 'yayınlanmadı' durumuna döndü."
+        flash = "Confirmation revoked; the record is back to the 'not published' state."
     elif ok == "error":
-        flash = "İşlem tamamlanamadı."
+        flash = "The action could not be completed."
         flash_kind = "err"
 
     body = render_detail(

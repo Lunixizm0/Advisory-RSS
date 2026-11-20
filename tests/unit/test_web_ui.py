@@ -86,7 +86,7 @@ def test_index_lists_advisories_and_links_rss(client):
     # link to the feed
     assert 'href="/rss.xml"' in r.text
     # not published yet
-    assert "yay" in r.text.lower()
+    assert "not published" in r.text.lower()
     assert "CERT-TR" in r.text
 
 
@@ -107,7 +107,7 @@ def test_detail_shows_full_mail(client):
     assert "abc@siberguvenlik.gov.tr" in r.text
     # no invented "başvuru id"
     assert "2026-4242" not in r.text
-    assert "Ba&#351;vuru id" not in r.text
+    assert "Başvuru id" not in r.text
     # confirmation UI
     assert "token" in r.text
 
@@ -214,7 +214,7 @@ def test_confirm_then_rss_points_to_nvd(client):
     assert detail.headers.get("location") == ("https://nvd.nist.gov/vuln/detail/CVE-2026-114350")
     manage = client.get("/ui/a/CERT-TR-CVE-2026-114350?manage=1")
     assert manage.status_code == 200
-    assert "Onay&#305; geri al" in manage.text
+    assert "Revoke confirmation" in manage.text
 
     # and the feed points to NVD again
     rss = client.get("/rss.xml")
@@ -430,4 +430,4 @@ def test_confirm_db_error_redirects_with_error_flash(client, monkeypatch):
     assert r.status_code == 303
     assert r.headers["location"] == "/ui/a/CERT-TR-CVE-2026-114350?ok=error"
     page2 = client.get("/ui/a/CERT-TR-CVE-2026-114350?ok=error")
-    assert "tamamlanamadı" in page2.text
+    assert "could not be completed" in page2.text

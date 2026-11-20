@@ -627,8 +627,8 @@ def detail_url(ghsa_id: str) -> str:
 def _state_badge(adv: NormalizedAdvisory, confirmed_ids: set[str]) -> str:
     if is_cert_tr(adv):
         if adv.ghsa_id in confirmed_ids:
-            return '<span class="badge ok">NVD\'de yayınlandı</span>'
-        return '<span class="badge pending">CVE tahsisi</span>'
+            return '<span class="badge ok">Published on NVD</span>'
+        return '<span class="badge pending">CVE ID allocated</span>'
     state = effective_state(adv, confirmed_ids)
     return f'<span class="badge neutral">{esc(state)}</span>'
 
@@ -650,11 +650,11 @@ def _header() -> str:
 <span class="brand-mark" aria-hidden="true">AR</span>
 <span class="brand-copy">
 <span class="brand-name">Advisory RSS</span>
-<span class="brand-sub">localhost güvenlik akışı</span>
+<span class="brand-sub">localhost security feed</span>
 </span>
 </a>
 <nav class="utility" aria-label="Site">
-<a href="/">Liste</a>
+<a href="/">Advisories</a>
 <a href="/rss.xml">RSS</a>
 <a href="/health">Health</a>
 </nav>
@@ -664,7 +664,7 @@ def _header() -> str:
 def _page(title: str, body: str) -> str:
     style_href = f"/ui/style.css?v={hashlib.sha256(STYLESHEET.encode()).hexdigest()[:10]}"
     return f"""<!DOCTYPE html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -680,7 +680,7 @@ def _page(title: str, body: str) -> str:
 </main>
 <footer class="site-footer">
 <span>advisory-rss · localhost-only</span>
-<nav aria-label="Alt bağlantılar">
+<nav aria-label="Secondary links">
 <a href="/rss.xml">RSS</a>
 <a href="/health">Health</a>
 </nav>
@@ -738,33 +738,33 @@ def render_index(
         sev_label = _severity_text(adv.severity)
         rows.append(
             "<tr>"
-            f'<td data-label="Kaynak"><div class="badge-stack">'
+            f'<td data-label="Source"><div class="badge-stack">'
             f"{_source_badge(adv)}{_state_badge(adv, confirmed_ids)}</div></td>"
-            f'<td class="cell-title" data-label="Kayıt">'
+            f'<td class="cell-title" data-label="Record">'
             f'<a href="{esc(title_href)}"{title_attrs} class="advisory-link">'
             f"{esc(adv.summary or adv.ghsa_id)}</a>"
             f'<div class="idline"><code>{esc(adv.ghsa_id)}</code>{conv_html}</div></td>'
             f'<td data-label="CVE"><span class="mono">{esc(cve) if cve else "-"}</span></td>'
-            f'<td data-label="Ürün"><span class="product">'
+            f'<td data-label="Product"><span class="product">'
             f"{esc(package) if package else '-'}</span></td>"
-            f'<td data-label="Seviye"><span class="sev {sev}">{esc(sev_label)}</span></td>'
-            f'<td data-label="Güncellenme">{_updated_html(adv)}</td>'
+            f'<td data-label="Severity"><span class="sev {sev}">{esc(sev_label)}</span></td>'
+            f'<td data-label="Updated">{_updated_html(adv)}</td>'
             "</tr>"
         )
 
     if rows:
         table = (
             '<table class="ledger">'
-            '<caption class="sr-only">Güvenlik danışma listesi</caption>'
+            '<caption class="sr-only">Security advisory list</caption>'
             "<thead><tr>"
-            "<th>Kaynak</th><th>Kayıt</th><th>CVE</th><th>Ürün</th>"
-            "<th>Seviye</th><th>Güncellenme</th>"
+            "<th>Source</th><th>Record</th><th>CVE</th><th>Product</th>"
+            "<th>Severity</th><th>Updated</th>"
             "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         )
     else:
         table = (
-            '<p class="empty">Bu filtreyle eşleşen kayıt yok. '
-            '<a href="/">Tüm kayıtlara dön</a>.</p>'
+            '<p class="empty">No records match this filter. '
+            '<a href="/">Back to all records</a>.</p>'
         )
 
     def seg(source: str, state: str, label: str, active: bool, count: int | None = None) -> str:
@@ -772,38 +772,38 @@ def render_index(
         count_html = f' <span class="count">{count}</span>' if count is not None else ""
         return f'<a href="/?source={source}&state={state}"{cls}>{esc(label)}{count_html}</a>'
 
-    filters = f"""<section class="toolbar" aria-label="Filtreler">
+    filters = f"""<section class="toolbar" aria-label="Filters">
 <div class="filter-set">
-<span class="filter-label">Kaynak</span>
+<span class="filter-label">Source</span>
 <span class="segmented">
-{seg("all", state_filter, "Tümü", source_filter == "all")}
+{seg("all", state_filter, "All", source_filter == "all")}
 {seg("github", state_filter, "GitHub", source_filter == "github")}
 {seg("cert-tr", state_filter, "CERT-TR", source_filter == "cert-tr")}
 </span>
 </div>
 <div class="filter-set">
-<span class="filter-label">Durum</span>
+<span class="filter-label">Status</span>
 <span class="segmented">
-{seg(source_filter, "all", "Tümü", state_filter == "all")}
-{seg(source_filter, "pending", "Onay bekleyen", state_filter == "pending", counts.get("pending", 0))}
+{seg(source_filter, "all", "All", state_filter == "all")}
+{seg(source_filter, "pending", "Pending confirmation", state_filter == "pending", counts.get("pending", 0))}
 </span>
 </div>
 </section>"""
 
     body = f"""<section class="page-head">
-<p class="eyebrow">Yerel akış</p>
-<h1>Güvenlik bülteni</h1>
-<p class="lede">GitHub ve CERT-TR kayıtları tek listede. CERT-TR için CVE tahsisi
-ile NVD yayını ayrı tutulur; onaylı kayıtlar doğrudan NVD'ye açılır.</p>
+<p class="eyebrow">Local feed</p>
+<h1>Security bulletin</h1>
+<p class="lede">GitHub and CERT-TR records in a single list. For CERT-TR, CVE ID
+allocation and NVD publication are kept separate; confirmed records open NVD directly.</p>
 </section>
-<section class="statline" aria-label="Özet">
-<div class="stat"><span class="stat-label">Toplam</span>
+<section class="statline" aria-label="Summary">
+<div class="stat"><span class="stat-label">Total</span>
 <span class="stat-value">{counts.get("total", 0)}</span></div>
 <div class="stat"><span class="stat-label">GitHub</span>
 <span class="stat-value">{counts.get("github", 0)}</span></div>
 <div class="stat"><span class="stat-label">CERT-TR</span>
 <span class="stat-value">{counts.get("cert_tr", 0)}</span></div>
-<div class="stat"><span class="stat-label">Onay bekleyen</span>
+<div class="stat"><span class="stat-label">Pending confirmation</span>
 <span class="stat-value warn">{counts.get("pending", 0)}</span></div>
 </section>
 {filters}
@@ -833,52 +833,52 @@ def render_detail(
         if confirmed:
             state_card = f"""<div class="notice ok">
 <div class="notice-head">
-<span class="notice-title">NVD'de yayınlandı</span>
-<span class="badge ok">Onaylı</span>
+<span class="notice-title">Published on NVD</span>
+<span class="badge ok">Confirmed</span>
 </div>
-<p class="muted">Onay zamanı: {esc(_fmt_dt(_parse_iso(confirmed_at)))}</p>
+<p class="muted">Confirmed at: {esc(_fmt_dt(_parse_iso(confirmed_at)))}</p>
 <div class="notice-actions">
-<a class="button" href="{esc(nvd_url(adv))}" target="_blank" rel="noopener noreferrer">NVD kaydı</a>
+<a class="button" href="{esc(nvd_url(adv))}" target="_blank" rel="noopener noreferrer">NVD record</a>
 <form class="inline-form" method="post" action="{esc(detail_url(adv.ghsa_id))}/confirm">
 <input type="hidden" name="action" value="unconfirm">
 <input type="hidden" name="token" value="{esc(csrf_token)}">
-<button class="button danger" type="submit">Onayı geri al</button>
+<button class="button danger" type="submit">Revoke confirmation</button>
 </form>
 </div>
 </div>"""
         else:
             state_card = f"""<div class="notice pending">
 <div class="notice-head">
-<span class="notice-title">CVE ID tahsis edildi</span>
-<span class="badge pending">NVD'de yayınlanmadı</span>
+<span class="notice-title">CVE ID allocated</span>
+<span class="badge pending">Not published on NVD</span>
 </div>
-<p class="muted">CERT-TR e-postası yalnızca CVE ID tahsisi yapar; yayın anlamına
-gelmez. Yayınlandığını doğruladığınızda kayıt NVD'ye yönlendirilir.</p>
+<p class="muted">A CERT-TR e-mail only allocates a CVE ID; it does not mean the
+advisory is published. Once you confirm publication, the record links to NVD.</p>
 <form class="inline-form" method="post" action="{esc(detail_url(adv.ghsa_id))}/confirm">
 <input type="hidden" name="action" value="confirm">
 <input type="hidden" name="token" value="{esc(csrf_token)}">
-<button class="button" type="submit">NVD'de yayınlandı olarak işaretle</button>
+<button class="button" type="submit">Mark as published on NVD</button>
 </form>
 </div>"""
     else:
         state_card = f"""<div class="notice neutral">
 <div class="notice-head">
-<span class="notice-title">GitHub kaydı</span>
+<span class="notice-title">GitHub advisory</span>
 <span class="badge neutral">{esc(effective_state(adv, confirmed_ids))}</span>
 </div>
-<p class="muted">Bu kayıt GitHub Security Advisories akışından gelir.</p>
+<p class="muted">This record comes from the GitHub Security Advisories feed.</p>
 </div>"""
 
     # --- mail block ---
     headers = [
-        ("Konu", raw.get("subject")),
-        ("Gönderen", raw.get("from")),
-        ("Yanıt", raw.get("reply_to")),
-        ("Tarih", raw.get("date")),
+        ("Subject", raw.get("subject")),
+        ("From", raw.get("from")),
+        ("Reply-To", raw.get("reply_to")),
+        ("Date", raw.get("date")),
         ("Message-Id", raw.get("message_id")),
         ("In-Reply-To", raw.get("in_reply_to")),
         ("References", " ".join(raw.get("references") or []) or None),
-        ("Ürün", raw.get("product")),
+        ("Product", raw.get("product")),
         ("CWE", raw.get("cwe")),
     ]
     header_rows = "".join(
@@ -892,23 +892,23 @@ gelmez. Yayınlandığını doğruladığınızda kayıt NVD'ye yönlendirilir.<
     html_block = ""
     if html_body:
         html_block = f"""<details class="raw">
-<summary>Orijinal HTML gövde · {len(html_body)} karakter</summary>
+<summary>Original HTML body · {len(html_body)} characters</summary>
 <pre class="mail">{esc(html_body)}</pre>
 </details>"""
 
     meta_rows = "".join(
         f"<dt>{label}</dt><dd>{esc(value) if value else '-'}</dd>"
         for label, value in [
-            ("Kimlik", adv.ghsa_id),
+            ("ID", adv.ghsa_id),
             ("CVE", adv.cve_id),
-            ("Kaynak", src),
-            ("Durum", effective_state(adv, confirmed_ids)),
-            ("Seviye", adv.severity),
-            ("Ürün", adv.package_name),
-            ("Güncellenme", _fmt_dt(adv.updated_at)),
-            ("Oluşturma", _fmt_dt(adv.published_at or adv.created_at)),
-            ("Yazar", adv.author_login),
-            ("Konuşma", conversation),
+            ("Source", src),
+            ("Status", effective_state(adv, confirmed_ids)),
+            ("Severity", adv.severity),
+            ("Product", adv.package_name),
+            ("Updated", _fmt_dt(adv.updated_at)),
+            ("Created", _fmt_dt(adv.published_at or adv.created_at)),
+            ("Author", adv.author_login),
+            ("Conversation", conversation),
         ]
     )
 
@@ -918,7 +918,7 @@ gelmez. Yayınlandığını doğruladığınızda kayıt NVD'ye yönlendirilir.<
     refs_panel = ""
     if refs:
         refs_panel = f"""<section class="panel">
-<div class="panel-head"><h2>Referanslar</h2><span class="panel-note">{len(refs)}</span></div>
+<div class="panel-head"><h2>References</h2><span class="panel-note">{len(refs)}</span></div>
 <div class="panel-body"><ul class="refs">"""
         refs_panel += "".join(
             f'<li><a href="{esc(r)}" target="_blank" rel="noopener noreferrer">{esc(r)}</a></li>'
@@ -931,7 +931,7 @@ gelmez. Yayınlandığını doğruladığınızda kayıt NVD'ye yönlendirilir.<
         kind = "flash err" if flash_kind == "err" else "flash"
         flash_html = f'<div class="{kind}">{esc(flash)}</div>'
 
-    body = f"""<p class="crumb"><a href="/">← Tüm kayıtlar</a></p>
+    body = f"""<p class="crumb"><a href="/">← All advisories</a></p>
 <header class="detail-head">
 <p class="eyebrow">{_source_badge(adv)}{" · " + esc(adv.cve_id) if adv.cve_id else ""}</p>
 <h1>{esc(adv.summary or adv.ghsa_id)}</h1>
@@ -946,10 +946,10 @@ gelmez. Yayınlandığını doğruladığınızda kayıt NVD'ye yönlendirilir.<
 {flash_html}
 {state_card}
 <section class="panel">
-<div class="panel-head"><h2>Mail</h2><span class="panel-note">{len(body_text)} karakter</span></div>
+<div class="panel-head"><h2>Mail</h2><span class="panel-note">{len(body_text)} characters</span></div>
 <div class="panel-body">
 <dl class="meta">{header_rows}</dl>
-<h3 class="subhead">Gövde</h3>
+<h3 class="subhead">Body</h3>
 <pre class="mail">{esc(body_text)}</pre>
 {html_block}
 </div>
@@ -957,7 +957,7 @@ gelmez. Yayınlandığını doğruladığınızda kayıt NVD'ye yönlendirilir.<
 </div>
 <aside class="detail-side">
 <section class="panel">
-<div class="panel-head"><h2>Kayıt</h2></div>
+<div class="panel-head"><h2>Record</h2></div>
 <div class="panel-body"><dl class="meta side-meta">{meta_rows}</dl></div>
 </section>
 {refs_panel}
