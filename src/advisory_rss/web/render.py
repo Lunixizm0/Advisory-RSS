@@ -628,7 +628,7 @@ def _state_badge(adv: NormalizedAdvisory, confirmed_ids: set[str]) -> str:
     if is_cert_tr(adv):
         if adv.ghsa_id in confirmed_ids:
             return '<span class="badge ok">Published on NVD</span>'
-        return '<span class="badge pending">CVE ID allocated</span>'
+        return '<span class="badge pending">Not published on NVD</span>'
     state = effective_state(adv, confirmed_ids)
     return f'<span class="badge neutral">{esc(state)}</span>'
 

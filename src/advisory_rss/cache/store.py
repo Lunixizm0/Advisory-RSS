@@ -427,12 +427,14 @@ class CacheStore:
                 if self._is_manually_unconfirmed(ghsa_id):
                     logger.debug("auto-confirm skipped - manually unconfirmed ghsa_id=%s", ghsa_id)
                     return False
-                cur = self._conn.execute(
-                    "INSERT INTO cert_tr_publications(ghsa_id, confirmed_at) VALUES (?, ?) "
-                    "ON CONFLICT(ghsa_id) DO NOTHING",
+                cur = self._conn.execute("SELECT 1 FROM cert_tr_publications WHERE ghsa_id=?", (ghsa_id,))
+                if cur.fetchone() is not None:
+                    return False
+                self._conn.execute(
+                    "INSERT INTO cert_tr_publications(ghsa_id, confirmed_at) VALUES (?, ?)",
                     (ghsa_id, now),
                 )
-                return cur.rowcount > 0
+                return True
             except sqlite3.Error as e:
                 logger.warning("auto_confirm_publication failed %s: %s", ghsa_id, e)
                 raise

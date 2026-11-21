@@ -274,7 +274,7 @@ def test_rss_unconfirmed_cert_tr_links_to_local_ui():
     # not published -> local page with the full mail, not the (dead) NVD entry
     assert link.text == "http://127.0.0.1:8765/ui/a/CERT-TR-CVE-2026-114350"
     title = item.find("title")
-    assert title is not None and "[YAYINLANMADI]" in (title.text or "")
+    assert title is not None and "[UNPUBLISHED]" in (title.text or "")
     cats = [c.text for c in item.findall("category")]
     assert "nvd:pending" in cats
     assert "state:cve_assigned" in cats
@@ -298,13 +298,13 @@ def test_rss_confirmed_cert_tr_links_to_nvd():
     assert link is not None
     assert link.text == "https://nvd.nist.gov/vuln/detail/CVE-2026-114350"
     title = item.find("title")
-    assert title is not None and "[YAYINLANMADI]" not in (title.text or "")
+    assert title is not None and "[UNPUBLISHED]" not in (title.text or "")
     cats = [c.text for c in item.findall("category")]
     assert "nvd:published" in cats
     assert "state:published" in cats
     # Published items must never send the reader back to the local web UI.
     assert "/ui/a/" not in xml
-    assert "Tam maili görüntüle" not in xml
+    assert "View full mail (local)" not in xml
 
 
 def test_rss_confirmed_cert_tr_ignores_non_nvd_html_url():

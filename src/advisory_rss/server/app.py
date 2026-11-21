@@ -211,7 +211,7 @@ def create_app(
             feed_title = "CERT-TR / Siber Güvenlik Başkanlığı Advisories"
             feed_desc = (
                 "CERT-TR advisories via Proton Mail (siberguvenlik.gov.tr) - "
-                "CVE ID tahsisleri, NVD'de yayınlanmış olarak işaretlenene kadar öyle görünür"
+                "CVE ID allocations appear as such until they are marked as published on NVD"
             )
             feed_link = "https://siberguvenlik.gov.tr"
         elif has_github and has_cert and src_filter == "all":
@@ -222,7 +222,7 @@ def create_app(
             feed_title = "CERT-TR / Siber Güvenlik Başkanlığı Advisories"
             feed_desc = (
                 "CERT-TR advisories via Proton Mail (siberguvenlik.gov.tr) - "
-                "CVE ID tahsisleri, NVD'de yayınlanmış olarak işaretlenene kadar öyle görünür"
+                "CVE ID allocations appear as such until they are marked as published on NVD"
             )
             feed_link = "https://siberguvenlik.gov.tr"
         else:

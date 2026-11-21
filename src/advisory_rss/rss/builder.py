@@ -95,7 +95,7 @@ def _build_item_xml(
         prefix = "[WITHDRAWN] "
     elif cert_tr:
         # CVE ID allocation != publication - mark it in the title until confirmed
-        prefix = "[CERT-TR] " if confirmed else "[CERT-TR][YAYINLANMADI] "
+        prefix = "[CERT-TR] " if confirmed else "[CERT-TR][UNPUBLISHED] "
     elif severity not in ("unknown", "n/a"):
         prefix = f"[{severity.upper()}] "
     base_title = adv.summary.strip() or adv.ghsa_id
@@ -182,13 +182,13 @@ def _cert_tr_status_html(adv: NormalizedAdvisory, confirmed_ids: set[str] | None
     confirmed = adv.ghsa_id in (confirmed_ids or set())
     if confirmed:
         return (
-            "<p><em>Durum:</em> NVD'de yayınlandı (kullanıcı onayı) "
+            "<p><em>Status:</em> Published on NVD (confirmed by the user) "
             '&nbsp; <em>NVD:</em> <a href="https://nvd.nist.gov/vuln/detail/'
-            f'{html.escape(adv.cve_id or "")}">NVD kaydı</a></p>'
+            f'{html.escape(adv.cve_id or "")}">NVD record</a></p>'
         )
     return (
-        "<p><em>Durum:</em> CVE ID tahsis edildi, NVD'de <strong>yayınlanmadı</strong>. "
-        "Bu kaydın yayınlanıp yayınlanmadığını doğrulamak için web arayüzünü kullanın.</p>"
+        "<p><em>Status:</em> CVE ID allocated, <strong>not published</strong> on NVD. "
+        "Use the web UI to verify whether this record has been published.</p>"
     )
 
 
@@ -217,7 +217,7 @@ def _build_description_html(
             local = _local_detail_url(adv, base_url)
             if local:
                 parts.append(
-                    f'<p><a href="{html.escape(local)}">Tam maili görüntüle (yerel)</a></p>'
+                    f'<p><a href="{html.escape(local)}">View full mail (local)</a></p>'
                 )
 
     if adv.package_name or adv.package_ecosystem:
@@ -343,9 +343,9 @@ def _build_content_html(
             local = _local_detail_url(adv, base_url)
             if local:
                 parts.append(
-                    f'<p><a href="{html.escape(local)}">Tam maili görüntüle (yerel)</a></p>'
+                    f'<p><a href="{html.escape(local)}">View full mail (local)</a></p>'
                 )
-            parts.append("<p><em>NVD kaydı (henüz yayınlanmadı)</em></p>")
+            parts.append("<p><em>NVD record (not published yet)</em></p>")
     else:
         view_link = adv.html_url if _is_safe_url(adv.html_url) else "#"
         parts.append(f'<p><a href="{html.escape(view_link)}">View on GitHub</a></p>')
